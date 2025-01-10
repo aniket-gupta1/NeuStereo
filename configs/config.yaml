@@ -1,0 +1,27 @@
+defaults:
+  - dataset: default_dataset
+  - _self_
+
+logdir: logs/
+exp_name: test_single_mask
+TIMEIT: false
+dev: false
+skip: 1
+enable_amp: false
+val_only: false
+checkpoint_dir: checkpoints/
+lr: 0.0001
+batch_size: 1
+num_workers: 8
+weight_decay: 0.005
+val_freq: 1
+epochs: 500
+resume: null
+distributed: false
+save_output: false
+
+# Dataset-specific
+dataset:
+  path: data/
+  train_split: train
+  val_split: val

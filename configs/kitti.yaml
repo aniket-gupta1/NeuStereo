@@ -1,0 +1,3 @@
+path: data/kitti/
+train_split: train_kitti
+val_split: val_kitti
