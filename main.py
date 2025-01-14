@@ -123,19 +123,46 @@ def setup_dataloaders(cfg, args, logger):
 
     return train_loader, val_loader, train_sampler
 
+def setup_model(cfg, args, logger):
+    # Params for distributed training
+    if args.distributed:
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        rank = int(os.environ.get('RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        torch.distributed.init_process_group(backend='nccl')
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f'cuda:{local_rank}')
+
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Setup the model
+    model = NeuStereo(cfg.model).to(device)
+
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.local_rank],
+            output_device=args.local_rank
+        )
+
+    logger.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
+
+    return model
+
+
 def main(cfg, args, logger):
     # Setup the dataloaders
     train_loader, val_loader, train_sampler = setup_dataloaders(cfg, args, logger)
-    
+
     # Setup the model
-    model = NeuStereo(cfg.model)
+    model = setup_model(cfg, args, logger)
 
     # Setup the trainer
     trainer = Trainer(cfg, args, logger)
 
     # Train the model
     trainer.fit(model, train_loader, val_loader, train_sampler)
-
 
 if __name__ == '__main__':
     parser = get_args_parser()
@@ -182,6 +209,6 @@ if __name__ == '__main__':
 
     # Also save the current code to the log directory
 
-    
+
 
     main(cfg, args, logger)

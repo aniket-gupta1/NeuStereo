@@ -2,10 +2,7 @@ import torch
 
 class Trainer():
     def __init__(self) -> None:
-        pass
-
-    def configure_optimizers():
-        pass 
+        pass        
 
     def train_epoch():
         pass
@@ -31,8 +28,13 @@ class Trainer():
     def test():
         pass
 
-    def fit():
-        pass
+    def fit(self, model, train_loader, val_loader, train_sampler):
+        # Step 1: Configure the optimizer, mixed precision, learning rate scheduler
+        optimizer = torch.optim.AdamW(model.parameters, lr=1e-4, weight_decay=1e-4)
+        scaler = torch.cuda.amp.GradScaler()
+        
+
+        # Step 2: 
 
 
 
