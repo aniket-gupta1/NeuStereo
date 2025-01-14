@@ -4,10 +4,7 @@ class Trainer():
     def __init__(self) -> None:
         pass
 
-    def setup_logger():
-        pass
-
-    def configre_optimizers():
+    def configure_optimizers():
         pass 
 
     def train_epoch():
@@ -32,6 +29,9 @@ class Trainer():
         pass
 
     def test():
+        pass
+
+    def fit():
         pass
 
 

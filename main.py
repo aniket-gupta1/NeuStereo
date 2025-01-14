@@ -1,56 +1,187 @@
-import hydra
-from omegaconf import DictConfig, OmegaConf
-from pathlib import Path
-import os
 import torch
+import torch.distributed
 from torch.utils.data import DataLoader
+from easydict import EasyDict
+import argparse
+import os
+from datasets import build_dataset, MultiDataset
 from NeuStereo.neustereo import NeuStereo
-from utils.misc import prepare_logger
+from trainer import Trainer
+from utils import prepare_logger, load_config
 
-@hydra.main(config_path="configs", config_name="config")
-def main(cfg: DictConfig):
-    # Print the entire config
-    print(OmegaConf.to_yaml(cfg))
+def get_args_parser():
+    parser = argparse.ArgumentParser()
 
-    # Create necessary directories
-    logdir = Path(cfg.logdir) / cfg.exp_name
-    logdir.mkdir(parents=True, exist_ok=True)
+    # Tensorboard summary name
+    parser.add_argument('--exp_name', default="test_single_mask", type=str)
+    parser.add_argument('--logdir', default="logs/", type=str)
+    parser.add_argument('--config', type=str, help='Path to the config file.')
+    parser.add_argument('--TIMEIT', default=False, type=bool)
+    parser.add_argument('--dev', action='store_true', default=False)
+    parser.add_argument('--skip', default=1, type=int)
+    parser.add_argument('--enable_amp', action='store_true', default=False)
+    parser.add_argument('--val_only', default=False, action='store_true')
 
-    # Prepare logger
-    logger, log_path = prepare_logger(cfg)
-    logger.info(f"Logging to {log_path}")
+    # Model
 
-    # Save config for reproducibility
-    config_out_fname = logdir / "config.yaml"
-    with open(config_out_fname, "w") as out_fid:
-        out_fid.write(OmegaConf.to_yaml(cfg))
+    # Dataset
+    parser.add_argument('--checkpoint_dir', default="checkpoints/", type=str)
+    parser.add_argument('--stage', default=['kitti'], type=str, nargs='+')
+    parser.add_argument('--val_dataset', default=[''], type=str, nargs='+')
 
-    # Dataset loading
-    train_dataset = build_train_dataset(cfg.dataset.path, cfg.dataset.train_split)
-    val_dataset = build_train_dataset(cfg.dataset.path, cfg.dataset.val_split)
+    # Training
+    parser.add_argument('--lr', default=0.0001, type=float)
+    parser.add_argument('--batch_size', default=1, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--weight_decay', default=0.005, type=float)
+    parser.add_argument('--val_freq', default=1, type=int)
+    parser.add_argument('--epochs', default=500, type=int)
 
-    train_loader = DataLoader(
+    # Resume pretrained model or resume training
+    parser.add_argument('--resume', default=None, type=str)
+
+    # Distributed training
+    parser.add_argument('--distributed', action='store_true', default=False)
+
+    # Output
+    parser.add_argument('--save_output', default=False, type=bool)
+
+    return parser
+
+def setup_dataloaders(cfg, args, logger):
+    train_dataset_list = []
+    val_dataset_list = []
+    config_dict = {}
+   
+    for stage in cfg.stage:
+        config = load_config(f"configs/dataset/{stage}.yaml")
+        train_dataset_i = build_dataset(config, stage, split="train")
+        val_dataset_i = build_dataset(config, stage, split="val")
+
+        train_dataset_list.append(train_dataset_i)
+        val_dataset_list.append(val_dataset_i)
+
+    train_dataset = MultiDataset(train_dataset_list)
+    val_dataset = MultiDataset(val_dataset_list)
+
+    if args.local_rank == 0:
+        for i, stage in enumerate(args.stage):
+            logger.info(f'Number of training samples in {stage}: {len(train_dataset_list[i])}')
+            logger.info(f'Number of validation samples in {stage}: {len(val_dataset_list[i])}')
+
+        logger.info(f"Total training samples: {len(train_dataset)}")
+        logger.info(f"Total validation samples: {len(val_dataset)}")
+    
+    # If using distributed, we need to intialize distributed sampler
+    if args.distributed:
+        if torch.distributed.is_available():
+            initialized = torch.distributed.is_initialized()
+        else:
+            initialized = False
+        
+        if initialized:
+            rank = torch.distributed.get_rank()
+            world_size = torch.distributed.get_world_size()
+        else:
+            rank = 0
+            world_size = 1
+
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=args.local_rank)
+
+        val_sampler = torch.utils.data.distributed.DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=args.local_rank)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+    # Initialize the dataloader
+    shuffle = False if args.distributed else True
+    train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=True,
-        num_workers=cfg.num_workers,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=False,
-        num_workers=cfg.num_workers,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+        sampler=train_sampler
     )
 
-    # Model setup
-    model = NeuStereo(cfg)
-    logger.info("Model initialized.")
+    # Load validation dataloader
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, 
+        batch_size=1,
+        shuffle=False, 
+        num_workers=args.num_workers,
+        pin_memory=True,
+        sampler=val_sampler
+    )
 
-    # Training process (placeholder)
-    for epoch in range(cfg.epochs):
-        logger.info(f"Epoch {epoch + 1}/{cfg.epochs}")
-        # Training loop
-        # Validation loop
+    return train_loader, val_loader, train_sampler
 
-if __name__ == "__main__":
-    main()
+def main(cfg, args, logger):
+    # Setup the dataloaders
+    train_loader, val_loader, train_sampler = setup_dataloaders(cfg, args, logger)
+    
+    # Setup the model
+    model = NeuStereo(cfg.model)
+
+    # Setup the trainer
+    trainer = Trainer(cfg, args, logger)
+
+    # Train the model
+    trainer.fit(model, train_loader, val_loader, train_sampler)
+
+
+if __name__ == '__main__':
+    parser = get_args_parser()
+    args = parser.parse_args()
+
+    args.local_rank = int(os.environ.get('LOCAL_RANK', 0))
+
+    if args.config is None:
+        if args.resume is None or not os.path.exists(args.resume):
+            raise ValueError("--config needs to be supplied if not resuming from a checkpoint")
+        else:
+            resume_folder = args.resume if os.path.isdir(args.resume) else os.path.dirname(args.resume)
+            args.config = os.path.normpath(os.path.join(resume_folder, "../config.yaml"))
+
+            if os.path.exists(args.config):
+                print(f"Using config file from checkpoint directory: {args.config}")
+            else:
+                raise ValueError(f"Config file not found in checkpoint directory: {args.config}")
+    
+    cfg = EasyDict(load_config(args.config))
+
+    # Store different datasets to its own subdirectory
+    # In case of training on multiple datasets, join their names with '_' and make a new directory
+    # cfg.dataset is a list of dataset names
+    logdir_name = ""
+    if len(cfg.stage) == 1:
+        logdir_name = cfg.stage[0]
+    else:
+        for dataset_name in cfg.stage:
+            logdir_name += dataset_name + "_"
+
+    args.logdir = os.path.join(args.logdir, logdir_name) 
+
+    if args.exp_name is None and len(cfg.get("exp_name", "")) > 0:
+        args.exp_name = cfg.exp_name
+    
+    logger, args.log_path = prepare_logger(args)
+
+    # Save the config file to the log directory
+    config_out_fname = os.path.join(args.log_path, "config.yaml")
+    with open(args.config, "r") as in_fid, open(config_out_fname, "w") as out_fid:
+        out_fid.write(f"Original config file name: {args.config}\n")
+        out_fid.write(in_fid.read())
+
+    # Also save the current code to the log directory
+
+    
+
+    main(cfg, args, logger)

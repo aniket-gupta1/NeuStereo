@@ -5,6 +5,100 @@ import torch
 import torch.multiprocessing as mp
 from torch import distributed as dist
 
+import argparse
+import logging
+from datetime import datetime
+import coloredlogs
+
+import yaml
+
+def load_config(path):
+    """
+    Loads config file:
+
+    Args:
+        path (str): path to the config file
+
+    Returns:
+        config (dict): dictionary of the configuration parameters, merge sub_dicts
+
+    """
+    with open(path, 'r') as f:
+        cfg = yaml.safe_load(f)
+
+    config = dict()
+    for key, value in cfg.items():
+        for k, v in value.items():
+            config[k] = v
+
+    return config
+
+class DebugFileHandler(logging.FileHandler):
+    """File handler that logs only debug messages"""
+    def __init__(self, filename, mode='a', encoding=None, delay=False):
+        super().__init__(filename, mode, encoding, delay)
+
+    def emit(self, record):
+        if not record.levelno == logging.DEBUG:
+            return
+        super().emit(record)
+
+def prepare_logger(opt: argparse.Namespace, log_path: str = None):
+    """Creates logging directory, and installs colorlogs
+
+    Args:
+        opt: Program arguments, should include --dev and --logdir flag.
+             See get_parent_parser()
+        log_path: Logging path (optional). This serves to overwrite the settings in
+                 argparse namespace
+
+    Returns:
+        logger (logging.Logger)
+        log_path (str): Logging directory
+    """
+
+    if log_path is None:
+        if opt.dev:
+            log_path = '../logdev'
+            shutil.rmtree(log_path, ignore_errors=True)
+        else:
+            datetime_str = datetime.now().strftime('%y%m%d_%H%M%S')
+            if opt.exp_name is not None:
+                log_path = os.path.join(opt.logdir, datetime_str + '_' + opt.exp_name)
+            else:
+                log_path = os.path.join(opt.logdir, datetime_str)
+    os.makedirs(log_path, exist_ok=True)
+
+    fmt = '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+    datefmt = '%m/%d %H:%M:%S'
+
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    logger.setLevel(logging.DEBUG)
+
+    # Log to output stream
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(coloredlogs.ColoredFormatter(fmt=fmt, datefmt=datefmt))
+    logger.addHandler(stream_handler)
+
+    # Log to file also
+    log_formatter = logging.Formatter(fmt, datefmt=datefmt)
+    file_handler = logging.FileHandler(f'{log_path}/log.txt')
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+
+    # Log debug messages into another file to avoid cluttering the standard log file
+    log_formatter = logging.Formatter(fmt, datefmt=datefmt)
+    file_handler = DebugFileHandler(f'{log_path}/debug_logs.txt')
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+
+    logger.info('Output and logs will be saved to {}'.format(log_path))
+
+    return logger, log_path
 
 def init_dist(launcher, backend='nccl', **kwargs):
     if mp.get_start_method(allow_none=True) is None:

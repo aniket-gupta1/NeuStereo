@@ -1,4 +1,12 @@
-# NeuFlow_v2
+# NeuStereo
+
+# Usage
+1. Input arguments i want
+    - [] exp_name
+    - [] config 
+    - [] dev or not
+
+
 
 Official PyTorch implementation of paper:
 

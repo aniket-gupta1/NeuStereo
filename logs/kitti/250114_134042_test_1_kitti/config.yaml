@@ -1,3 +1,4 @@
+Original config file name: configs/config.yaml
 general: 
   logdir: logs/
   exp_name: test_single_mask
