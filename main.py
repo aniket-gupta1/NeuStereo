@@ -135,6 +135,11 @@ def setup_model(cfg, args, logger):
 
     else:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    if args.resume:
+        model = NeuStereo(cfg.model).to(device)
+        model.load_state_dict(torch.load(args.resume))
+        logger.info(f"Loaded model from checkpoint: {args.resume}")
     
     # Setup the model
     model = NeuStereo(cfg.model).to(device)
@@ -149,7 +154,6 @@ def setup_model(cfg, args, logger):
     logger.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
 
     return model
-
 
 def main(cfg, args, logger):
     # Setup the dataloaders
@@ -207,8 +211,6 @@ if __name__ == '__main__':
         out_fid.write(f"Original config file name: {args.config}\n")
         out_fid.write(in_fid.read())
 
-    # Also save the current code to the log directory
-
-
+    # Also save the current codebase to the log directory
 
     main(cfg, args, logger)
