@@ -10,6 +10,7 @@ from loss import flow_loss_func
 from data_utils.evaluate import validate_things, validate_sintel, validate_kitti, validate_viper
 from load_model import my_load_weights, my_freeze_model
 from dist_utils import get_dist_info, init_dist, setup_for_distributed
+from torch.utils.tensorboard import SummaryWriter
 
 
 def get_args_parser():
@@ -86,6 +87,7 @@ def main(args):
     scaler = torch.cuda.amp.GradScaler()
     optimizer = torch.optim.AdamW(model_without_ddp.parameters(), lr=args.lr,
                                   weight_decay=1e-4)
+    writer = SummaryWriter(log_dir='runs/example_experiment')
 
     start_step = 0
 
@@ -175,6 +177,12 @@ def main(args):
             scaler.update()
 
             print(total_steps, round(metrics['epe'], 3), round(metrics['mag'], 3), optimizer.param_groups[-1]['lr'])
+            writer.add_scalar('Loss/train', loss.item(), epoch)
+
+            # Log histograms
+            for name, param in model.named_parameters():
+                writer.add_histogram(f'{name}/weights', param, epoch)
+                #writer.add_histogram(f'{name}/gradients', param.grad, epoch)
 
             total_steps += 1
 
@@ -232,6 +240,7 @@ def main(args):
                 model.train()
 
         epoch += 1
+    writer.close()
 
 
 if __name__ == '__main__':
