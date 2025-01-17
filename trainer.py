@@ -103,7 +103,7 @@ class Trainer():
 
     def fit(self, model, train_loader, val_loader, train_sampler):
         # Step 1: Configure the optimizer, mixed precision, learning rate scheduler
-        optimizer = torch.optim.AdamW(model.parameters, lr=1e-4, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
         scaler = torch.cuda.amp.GradScaler()
         
         # Step 2: Run the training loop
@@ -111,7 +111,7 @@ class Trainer():
             self.val()
             return
 
-        for epoch_num in self.cfg.num_epochs:
+        for epoch_num in range(1, self.cfg.num_epochs+1):
             self.train(model, train_loader, optimizer, scaler, epoch_num)
 
             if epoch_num % self.cfg.val_freq == 0:

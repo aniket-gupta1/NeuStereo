@@ -31,8 +31,8 @@ def get_args_parser():
 
     # Training
     parser.add_argument('--lr', default=0.0001, type=float)
-    parser.add_argument('--batch_size', default=1, type=int)
-    parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument('--batch_size', default=4, type=int)
+    parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--weight_decay', default=0.005, type=float)
     parser.add_argument('--val_freq', default=1, type=int)
     parser.add_argument('--epochs', default=500, type=int)
@@ -137,12 +137,12 @@ def setup_model(cfg, args, logger):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     if args.resume:
-        model = NeuStereo(cfg.model).to(device)
+        model = NeuStereo(cfg).to(device)
         model.load_state_dict(torch.load(args.resume))
         logger.info(f"Loaded model from checkpoint: {args.resume}")
     
     # Setup the model
-    model = NeuStereo(cfg.model).to(device)
+    model = NeuStereo(cfg).to(device)
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(

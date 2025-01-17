@@ -26,12 +26,13 @@ class MultiDataset(Dataset):
         return data
 
 def build_dataset(config, stage, split='train'):
+    print("Stage: ", stage)
     if stage == 'chairs':
         aug_params = {'crop_size': (384, 512), 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
 
         train_dataset = FlyingChairs(aug_params, split='training')
 
-    elif stage == 'things':
+    elif stage == 'flyingthings':
         aug_params = {'crop_size': (384, 768), 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
 
         clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass')

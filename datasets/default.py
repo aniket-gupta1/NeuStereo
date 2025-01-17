@@ -10,6 +10,7 @@ from glob import glob
 import os.path as osp
 
 from . import frame_utils
+from torchvision.transforms import ColorJitter
 
 
 class FlowDataset(data.Dataset):
@@ -28,7 +29,7 @@ class FlowDataset(data.Dataset):
 
         self.is_test = False
         self.init_seed = False
-        self.flow_list = []
+        self.disp_list = []
         self.image_list = []
         self.extra_info = []
 
@@ -36,6 +37,7 @@ class FlowDataset(data.Dataset):
         self.occ_list = []
 
     def __getitem__(self, index):
+        print("Index is: ", index)
 
         if self.is_test:
             img1 = frame_utils.read_gen(self.image_list[index][0])
@@ -49,24 +51,17 @@ class FlowDataset(data.Dataset):
 
             return img1, img2, self.extra_info[index]
 
-        if not self.init_seed:
-            worker_info = torch.utils.data.get_worker_info()
-            if worker_info is not None:
-                torch.manual_seed(worker_info.id)
-                np.random.seed(worker_info.id)
-                random.seed(worker_info.id)
-                self.init_seed = True
 
         index = index % len(self.image_list)
         valid = None
 
         if self.sparse:
             if self.virtual:
-                flow, valid = frame_utils.read_vkitti_png_flow(self.flow_list[index])  # [H, W, 2], [H, W]
+                flow, valid = frame_utils.read_vkitti_png_flow(self.disp_list[index])  # [H, W, 2], [H, W]
             else:
-                flow, valid = frame_utils.readFlowKITTI(self.flow_list[index])  # [H, W, 2], [H, W]
+                flow, valid = frame_utils.readFlowKITTI(self.disp_list[index])  # [H, W, 2], [H, W]
         else:
-            flow = frame_utils.read_gen(self.flow_list[index])
+            flow = frame_utils.read_gen(self.disp_list[index])
 
         if self.load_occlusion:
             occlusion = frame_utils.read_gen(self.occ_list[index])  # [H, W], 0 or 255 (occluded)
@@ -120,13 +115,14 @@ class FlowDataset(data.Dataset):
         return img1, img2, flow, valid.float()
 
     def __rmul__(self, v):
-        self.flow_list = v * self.flow_list
+        self.disp_list = v * self.disp_list
         self.image_list = v * self.image_list
         self.occ_list = v * self.occ_list
 
         return self
 
     def __len__(self):
+        print("Length of self.image_list: ", len(self.image_list))
         return len(self.image_list)
 
 
