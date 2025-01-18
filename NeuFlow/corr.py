@@ -57,15 +57,27 @@ class CorrBlock:
 
     def init_corr_pyr(self, feature0, feature1):
         b, c, h, w = feature0.shape
-        feature0 = feature0.view(b, c, h*w)
-        feature1 = feature1.view(b, c, h*w)
+
+        #
+        # 
+        # changes for NeuStereo
         
-        corr = torch.matmul(feature0.transpose(1,2), feature1)
-        corr = corr.view(b*h*w, 1, h, w) / math.sqrt(c)
+        
+        #feature0 = feature0.view(b, c, h*w)
+        #feature1 = feature1.view(b, c, h*w)
+        feature0 = feature0.view(b, c, h, w)
+        feature1 = feature1.view(b, c, h, w)
+        corr = torch.einsum('aijk,aijh->ajkh', feature0, feature1)      
+        corr = corr.reshape(b*h*w, 1, 1, w)/math.sqrt(c)
+
+
+        #corr = torch.matmul(feature0.transpose(1,2), feature1)
+        #corr = corr.view(b*h*w, 1, h, w) / math.sqrt(c)
 
         corr_pyramid = [corr]
         for i in range(self.levels-1):
-            corr = F.avg_pool2d(corr, kernel_size=2, stride=2)
+            #corr = F.avg_pool2d(corr, kernel_size=2, stride=2)
+            corr = F.avg_pool2d(corr, kernel_size=[1,2], stride=[1,2])
             corr_pyramid.append(corr)
 
         return corr_pyramid
