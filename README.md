@@ -1,10 +1,10 @@
 # NeuStereo
 
-# Usage
-1. Input arguments i want
-    - [] exp_name
-    - [] config 
-    - [] dev or not
+# TODO:
+- [] Train a model with the original NeuFlow architecture and check performance.
+- [] Optimize the correlation lookup. 
+- [] Optimize the cross-attention operation.
+
 
 
 

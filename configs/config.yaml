@@ -5,7 +5,6 @@ general:
   dev: false
   skip: 1
   enable_amp: false
-  val_only: false
   checkpoint_dir: checkpoints/
   lr: 0.0001
   batch_size: 1
@@ -18,6 +17,8 @@ general:
   save_output: false
   stage: ['flyingthings']
   num_epochs: 100
+  max_disp: 400
+  val_stage: ['flyingthings']
 
 model:
   feature_dim_s16: 128
@@ -27,3 +28,9 @@ model:
   context_dim_s8: 64
   iter_context_dim_s8: 64
   feature_dim_s1: 128
+
+dataset_weights: 
+  flyingchairs_weight: 1.0
+  flyingthings_weight: 1.0
+  sintel_weight: 1.0
+  kitti_weight: 1.0
