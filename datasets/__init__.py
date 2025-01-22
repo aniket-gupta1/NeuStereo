@@ -26,7 +26,6 @@ class MultiDataset(Dataset):
         return data
 
 def build_dataset(config, stage, split='train'):
-    print("Stage: ", stage)
     if stage == 'chairs':
         aug_params = {'crop_size': (384, 512), 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
 

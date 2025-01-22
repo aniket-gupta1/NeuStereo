@@ -8,6 +8,7 @@ from datasets import build_dataset, MultiDataset
 from NeuStereo.neustereo import NeuStereo
 from trainer import Trainer
 from utils import prepare_logger, load_config
+from torch.utils.tensorboard import SummaryWriter
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
@@ -53,19 +54,21 @@ def setup_dataloaders(cfg, args, logger):
     val_dataset_list = []
     config_dict = {}
    
+    train_dataset = None
+    val_dataset = None
     for stage in cfg.stage:
         config = load_config(f"configs/dataset/{stage}.yaml")
         train_dataset_i = build_dataset(config, stage, split="train")
         val_dataset_i = build_dataset(config, stage, split="val")
 
-        train_dataset_list.append(train_dataset_i)
-        val_dataset_list.append(val_dataset_i)
+        if train_dataset is None:
+            train_dataset = train_dataset_i * cfg.
+            val_dataset = val_dataset_i
+        else:
 
-    train_dataset = MultiDataset(train_dataset_list)
-    val_dataset = MultiDataset(val_dataset_list)
 
     if args.local_rank == 0:
-        for i, stage in enumerate(args.stage):
+        for i, stage in enumerate(cfg.stage):
             logger.info(f'Number of training samples in {stage}: {len(train_dataset_list[i])}')
             logger.info(f'Number of validation samples in {stage}: {len(val_dataset_list[i])}')
 
@@ -113,7 +116,7 @@ def setup_dataloaders(cfg, args, logger):
 
     # Load validation dataloader
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, 
+        val_dataset,
         batch_size=1,
         shuffle=False, 
         num_workers=args.num_workers,
@@ -123,19 +126,7 @@ def setup_dataloaders(cfg, args, logger):
 
     return train_loader, val_loader, train_sampler
 
-def setup_model(cfg, args, logger):
-    # Params for distributed training
-    if args.distributed:
-        local_rank = int(os.environ.get('LOCAL_RANK', 0))
-        rank = int(os.environ.get('RANK', 0))
-        world_size = int(os.environ.get('WORLD_SIZE', 1))
-        torch.distributed.init_process_group(backend='nccl')
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f'cuda:{local_rank}')
-
-    else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+def setup_model(cfg, args, logger, device):
     if args.resume:
         model = NeuStereo(cfg).to(device)
         model.load_state_dict(torch.load(args.resume))
@@ -156,17 +147,35 @@ def setup_model(cfg, args, logger):
     return model
 
 def main(cfg, args, logger):
+    # Params for distributed training
+    if args.distributed:
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        rank = int(os.environ.get('RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        torch.distributed.init_process_group(backend='nccl')
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f'cuda:{local_rank}')
+
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Make the tensorboard writer
+    writer = SummaryWriter(log_dir=args.log_path)
+
     # Setup the dataloaders
     train_loader, val_loader, train_sampler = setup_dataloaders(cfg, args, logger)
 
     # Setup the model
-    model = setup_model(cfg, args, logger)
+    model = setup_model(cfg, args, logger, device)
 
     # Setup the trainer
-    trainer = Trainer(cfg, args, logger)
+    trainer = Trainer(cfg, args, logger, device, writer)
 
     # Train the model
-    trainer.fit(model, train_loader, val_loader, train_sampler)
+    if args.val_only:
+        trainer.evaluate(model, val_loader)
+    else:
+        trainer.fit(model, train_loader, val_loader, train_sampler)
 
 if __name__ == '__main__':
     parser = get_args_parser()

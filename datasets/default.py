@@ -10,7 +10,10 @@ from glob import glob
 import os.path as osp
 
 from . import frame_utils
+from PIL import Image
+import cv2
 from torchvision.transforms import ColorJitter
+
 
 
 class FlowDataset(data.Dataset):
@@ -29,6 +32,7 @@ class FlowDataset(data.Dataset):
 
         self.is_test = False
         self.init_seed = False
+        self.flow_list = []
         self.disp_list = []
         self.image_list = []
         self.extra_info = []
@@ -37,20 +41,16 @@ class FlowDataset(data.Dataset):
         self.occ_list = []
 
     def __getitem__(self, index):
-        print("Index is: ", index)
+        # print("Index is: ", index)
 
         if self.is_test:
             img1 = frame_utils.read_gen(self.image_list[index][0])
             img2 = frame_utils.read_gen(self.image_list[index][1])
-
             img1 = np.array(img1).astype(np.uint8)[..., :3]
             img2 = np.array(img2).astype(np.uint8)[..., :3]
-
             img1 = torch.from_numpy(img1).permute(2, 0, 1).float()
             img2 = torch.from_numpy(img2).permute(2, 0, 1).float()
-
             return img1, img2, self.extra_info[index]
-
 
         index = index % len(self.image_list)
         valid = None
@@ -68,10 +68,14 @@ class FlowDataset(data.Dataset):
 
         img1 = frame_utils.read_gen(self.image_list[index][0])
         img2 = frame_utils.read_gen(self.image_list[index][1])
+        disp = frame_utils.read_gen(self.disp_list[index])
 
-        flow = np.array(flow).astype(np.float32)
+        # flow = np.array(flow).astype(np.float32)
         img1 = np.array(img1).astype(np.uint8)
         img2 = np.array(img2).astype(np.uint8)
+        
+        disp = np.array(disp).astype(np.float32)
+        flow = np.stack([-disp, np.zeros_like(disp)], axis=-1)
 
         if self.load_occlusion:
             occlusion = np.array(occlusion).astype(np.float32)
@@ -122,7 +126,7 @@ class FlowDataset(data.Dataset):
         return self
 
     def __len__(self):
-        print("Length of self.image_list: ", len(self.image_list))
+        # print("Length of self.image_list: ", len(self.image_list))
         return len(self.image_list)
 
 
