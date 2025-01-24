@@ -11,6 +11,7 @@ from data_utils.evaluate import validate_things, validate_sintel, validate_kitti
 from load_model import my_load_weights, my_freeze_model
 from dist_utils import get_dist_info, init_dist, setup_for_distributed
 from torch.utils.tensorboard import SummaryWriter
+import pdb
 
 
 def get_args_parser():
@@ -157,6 +158,7 @@ def main(args):
 
             with torch.cuda.amp.autocast(enabled=True):
                 flow_preds = model(img1, img2, iters_s16=4, iters_s8=7)
+                pdb.set_trace()
                 loss, metrics = flow_loss_func(flow_preds, flow_gt, valid, args.max_flow)
 
             scaler.scale(loss).backward()

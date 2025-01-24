@@ -113,6 +113,8 @@ class FlowDataset(data.Dataset):
         else:
             valid = (flow[0].abs() < 1000) & (flow[1].abs() < 1000)
 
+        flow = flow[:1]
+
         # mask out occluded pixels
         if self.load_occlusion:
             # non-occlusion: 0, occlusion: 255
