@@ -7,7 +7,7 @@ general:
   enable_amp: false
   checkpoint_dir: checkpoints/
   lr: 0.0001
-  batch_size: 1
+  batch_size: 8
   num_workers: 8
   weight_decay: 0.005
   val_freq: 1
@@ -28,9 +28,3 @@ model:
   context_dim_s8: 64
   iter_context_dim_s8: 64
   feature_dim_s1: 128
-
-dataset_weights: 
-  flyingchairs_weight: 1.0
-  flyingthings_weight: 1.0
-  sintel_weight: 1.0
-  kitti_weight: 1.0

@@ -51,29 +51,22 @@ def get_args_parser():
 
 def setup_dataloaders(cfg, args, logger):
     train_dataset_list = []
-    val_dataset_list = []
-    config_dict = {}
    
     train_dataset = None
-    val_dataset = None
     for stage in cfg.stage:
         config = load_config(f"configs/dataset/{stage}.yaml")
         train_dataset_i = build_dataset(config, stage, split="train")
-        val_dataset_i = build_dataset(config, stage, split="val")
 
         if train_dataset is None:
-            train_dataset = train_dataset_i * cfg.
-            val_dataset = val_dataset_i
+            train_dataset = train_dataset_i #* config['weight']
         else:
+            train_dataset += train_dataset_i #* config['weight']
 
+        if args.local_rank == 0:
+            logger.info(f'Number of training samples in {stage}: {len(train_dataset_i)}')
 
     if args.local_rank == 0:
-        for i, stage in enumerate(cfg.stage):
-            logger.info(f'Number of training samples in {stage}: {len(train_dataset_list[i])}')
-            logger.info(f'Number of validation samples in {stage}: {len(val_dataset_list[i])}')
-
         logger.info(f"Total training samples: {len(train_dataset)}")
-        logger.info(f"Total validation samples: {len(val_dataset)}")
     
     # If using distributed, we need to intialize distributed sampler
     if args.distributed:
@@ -94,37 +87,22 @@ def setup_dataloaders(cfg, args, logger):
             num_replicas=world_size,
             rank=args.local_rank)
 
-        val_sampler = torch.utils.data.distributed.DistributedSampler(
-            val_dataset,
-            num_replicas=world_size,
-            rank=args.local_rank)
     else:
         train_sampler = None
-        val_sampler = None
 
     # Initialize the dataloader
     shuffle = False if args.distributed else True
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=shuffle,
-        num_workers=args.num_workers,
+        num_workers=cfg.num_workers,
         pin_memory=True,
         drop_last=True,
         sampler=train_sampler
     )
 
-    # Load validation dataloader
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=1,
-        shuffle=False, 
-        num_workers=args.num_workers,
-        pin_memory=True,
-        sampler=val_sampler
-    )
-
-    return train_loader, val_loader, train_sampler
+    return train_loader, train_sampler
 
 def setup_model(cfg, args, logger, device):
     if args.resume:
@@ -163,7 +141,7 @@ def main(cfg, args, logger):
     writer = SummaryWriter(log_dir=args.log_path)
 
     # Setup the dataloaders
-    train_loader, val_loader, train_sampler = setup_dataloaders(cfg, args, logger)
+    train_loader, train_sampler = setup_dataloaders(cfg, args, logger)
 
     # Setup the model
     model = setup_model(cfg, args, logger, device)
@@ -173,9 +151,9 @@ def main(cfg, args, logger):
 
     # Train the model
     if args.val_only:
-        trainer.evaluate(model, val_loader)
+        trainer.val(model)
     else:
-        trainer.fit(model, train_loader, val_loader, train_sampler)
+        trainer.fit(model, train_loader, train_sampler)
 
 if __name__ == '__main__':
     parser = get_args_parser()

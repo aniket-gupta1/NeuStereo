@@ -7,6 +7,7 @@ from NeuStereo import matching
 from NeuStereo import corr
 from NeuStereo import refine
 from NeuStereo import upsample
+import pdb
 
 class NeuStereo(torch.nn.Module):
     def __init__(self, config):
@@ -82,16 +83,30 @@ class NeuStereo(torch.nn.Module):
 
         feature0_s16, feature1_s16 = features_s16.chunk(chunks=2, dim=0)
 
-        flow0 = self.matching_s16.global_correlation_softmax(feature0_s16, feature1_s16)
+
+        # start_event = torch.cuda.Event(enable_timing=True)
+        # end_event = torch.cuda.Event(enable_timing=True)
+        # start_event.record()
+        flow0 = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
+        # flow0 = self.matching_s16.global_correlation_softmax(feature0_s16, feature1_s16)
+        # flow0 = flow0[:, 0, :, :].unsqueeze(1)
+        # end_event.record()
+        # torch.cuda.synchronize()
+        # elapsed_time_ms = start_event.elapsed_time(end_event)  # Time in milliseconds
+        # print(f"Time taken for CUDA operation: {elapsed_time_ms:.3f} ms")
 
         # flow0 = self.flow_attn_s16(feature0_s16, flow0)
 
+        # print("Features0_16: ", feature0_s16.shape)
+        # print("Features1_16: ", feature1_s16.shape)
+
         corr_pyr_s16 = self.corr_block_s16.init_corr_pyr(feature0_s16, feature1_s16)
+
+        # print("corr_pyr_s16: ", corr_pyr_s16.shape)
 
         iter_context_s16 = self.init_iter_context_s16
 
         for i in range(iters_s16):
-
             if self.training and i > 0:
                 flow0 = flow0.detach()
                 # iter_context_s16 = iter_context_s16.detach()
@@ -100,6 +115,8 @@ class NeuStereo(torch.nn.Module):
 
             iter_context_s16, delta_flow = self.refine_s16(corrs, context_s16, iter_context_s16, flow0)
 
+            # pdb.set_trace()
+            # delta_flow[:, 1, :, :] = 0.0
             flow0 = flow0 + delta_flow
 
             if self.training:
@@ -138,6 +155,6 @@ class NeuStereo(torch.nn.Module):
 
                 feature0_s1 = self.conv_s8(img0)
                 up_flow0 = self.upsample_s8(feature0_s1, flow0) * 8
-                flow_list.append(up_flow0)
+                flow_list.append(up_flow0[:, :1])
 
         return flow_list

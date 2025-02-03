@@ -34,8 +34,8 @@ def build_dataset(config, stage, split='train'):
     elif stage == 'flyingthings':
         aug_params = {'crop_size': (384, 768), 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
 
-        clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass')
-        final_dataset = FlyingThings3D(aug_params, dstype='frames_finalpass')
+        clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass', validate_subset=(split == 'val'))
+        final_dataset = FlyingThings3D(aug_params, dstype='frames_finalpass', validate_subset=(split == 'val'))
         train_dataset = clean_dataset + final_dataset
 
     elif stage == 'sintel':

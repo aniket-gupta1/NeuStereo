@@ -1,4 +1,8 @@
 import torch
+from evaluate_stereo import *
+from utils import load_config
+import os
+import pdb
 
 class Trainer():
     def __init__(self, cfg, args, logger, device, tensorboard_writer) -> None:
@@ -86,35 +90,38 @@ class Trainer():
             self.tensorboard_writer.add_scalar('Train/Mag', metrics['mag'], epoch_num * len(train_loader) + i)
             self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + i)
 
+    def val(self, model, epoch_num=1):
 
-    def val(self, model, val_loader, epoch_num):
-        # Step 1: Set the model to eval
-        model.eval()
+        for stage in self.cfg.val_stage:
+            dataset_config = load_config(f"configs/dataset/{stage}.yaml")
 
-        #TODO: Get separate evals for different datasets.
+            if stage=="flyingthings":
+                results = validate_things(model, config=dataset_config, stage=stage, device=self.device)
+                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
+            if stage=="kitti":
+                results = validate_kitti(model, config=dataset_config, stage=stage)
+                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
-        # Step 2: Iterate over the validation loader
-        for i, sample in enumerate(val_loader):
-            img1, img2, disp_gt, valid = [x.to(self.device) for x in sample]
+            if stage=="eth3d":
+                results = validate_eth3d(model, config=dataset_config, stage=stage)
+                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
-            img1 = img1.half()
-            img2 = img2.half()
+            if stage=="middlebury":
+                results = validate_middlebury(model, config=dataset_config, stage=stage)
+                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
-            model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
+            
 
-            with torch.cuda.amp.autocast(enabled=True):
-                disp_preds = model(img1, img2)
-                loss, metrics = self.loss_func(disp_preds, disp_gt, valid, model.cfg.max_disp)
-        
-            self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {round(metrics['epe'], 3)}, Mag: {round(metrics['mag'], 3)}")
-
-            # Add the loss, epe and mag to tensorboard
-            self.tensorboard_writer.add_scalar('Val/Loss', loss.item(), epoch_num * len(val_loader) + i)
-            self.tensorboard_writer.add_scalar('Val/EPE', metrics['epe'], epoch_num * len(val_loader) + i)
-            self.tensorboard_writer.add_scalar('Val/Mag', metrics['mag'], epoch_num * len(val_loader) + i)
-
-    def fit(self, model, train_loader, val_loader, train_sampler):
+    def fit(self, model, train_loader, train_sampler):
         # Step 1: Configure the optimizer, mixed precision, learning rate scheduler
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
         scaler = torch.cuda.amp.GradScaler()
@@ -124,10 +131,10 @@ class Trainer():
             self.train(model, train_loader, optimizer, scaler, epoch_num)
 
             if epoch_num % self.cfg.val_freq == 0:
-                self.val(model, val_loader, epoch_num)
+                self.val(model, epoch_num)
         
-        # Step 3: Save the model
-        self.save_checkpoint(model, optimizer, epoch_num)
+            # Save the model
+            self.save_checkpoint(model, optimizer, epoch_num)
 
 
 
