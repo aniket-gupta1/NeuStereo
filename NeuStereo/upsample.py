@@ -8,7 +8,7 @@ class UpSample(torch.nn.Module):
 
         self.upsample_factor = upsample_factor
 
-        self.conv1 = torch.nn.Conv2d(1 + feature_dim, 256, 3, 1, 1)
+        self.conv1 = torch.nn.Conv2d(2 + feature_dim, 256, 3, 1, 1)
         self.conv2 = torch.nn.Conv2d(256, 512, 3, 1, 1)
         self.conv3 = torch.nn.Conv2d(512, upsample_factor ** 2 * 9, 1, 1, 0)
         self.relu = torch.nn.ReLU(inplace=True)
@@ -26,11 +26,11 @@ class UpSample(torch.nn.Module):
 
         # up_flow = F.unfold(self.upsample_factor * flow, [3, 3], padding=1)
         up_flow = F.unfold(flow, [3, 3], padding=1)
-        up_flow = up_flow.view(b, 1, 9, 1, 1, h, w)  # [B, 1, 9, 1, 1, H, W]
+        up_flow = up_flow.view(b, 2, 9, 1, 1, h, w)  # [B, 2, 9, 1, 1, H, W]
 
-        up_flow = torch.sum(mask * up_flow, dim=2)  # [B, 1, K, K, H, W]
-        up_flow = up_flow.permute(0, 1, 4, 2, 5, 3)  # [B, 1, K, H, K, W]
-        up_flow = up_flow.reshape(b, 1, self.upsample_factor * h,
-                                  self.upsample_factor * w)  # [B, 1, K*H, K*W]
+        up_flow = torch.sum(mask * up_flow, dim=2)  # [B, 2, K, K, H, W]
+        up_flow = up_flow.permute(0, 1, 4, 2, 5, 3)  # [B, 2, K, H, K, W]
+        up_flow = up_flow.reshape(b, 2, self.upsample_factor * h,
+                                  self.upsample_factor * w)  # [B, 2, K*H, K*W]
 
         return up_flow

@@ -19,12 +19,12 @@ class Refine(torch.nn.Module):
         self.radius = radius
         # print("Conv1: ", (radius*2+1)**2*levels+context_dim+iter_context_dim+1+1, context_dim+iter_context_dim)
         # print("Conv2: ", context_dim+iter_context_dim, inter_dim)
-        self.conv1 = ConvBlock((radius*2+1)**2*levels+context_dim+iter_context_dim+1+1, context_dim+iter_context_dim, kernel_size=3, stride=1, padding=1)
+        self.conv1 = ConvBlock((radius*2+1)**2*levels+context_dim+iter_context_dim+1+2, context_dim+iter_context_dim, kernel_size=3, stride=1, padding=1)
         self.conv2 = ConvBlock(context_dim+iter_context_dim, inter_dim, kernel_size=3, stride=1, padding=1)
 
         self.conv_layers = torch.nn.ModuleList([ConvBlock(inter_dim, inter_dim, kernel_size=3, stride=1, padding=1) for i in range(num_layers)])
 
-        self.conv3 = torch.nn.Conv2d(inter_dim, iter_context_dim+1, kernel_size=3, stride=1, padding=1, padding_mode='zeros', bias=True)
+        self.conv3 = torch.nn.Conv2d(inter_dim, iter_context_dim+2, kernel_size=3, stride=1, padding=1, padding_mode='zeros', bias=True)
         self.hidden_act = torch.nn.Hardtanh(min_val=-4.0, max_val=4.0)
 
     def init_bhwd(self, batch_size, height, width, device, amp):
@@ -42,4 +42,4 @@ class Refine(torch.nn.Module):
 
         x = self.conv3(x)
 
-        return self.hidden_act(x[:,1:]), x[:,:1]
+        return self.hidden_act(x[:,2:]), x[:,:2]
