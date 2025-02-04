@@ -12,6 +12,9 @@ class Trainer():
         self.device = device
         self.tensorboard_writer = tensorboard_writer
 
+        # Make the checkpoint directory
+        os.makedirs(self.cfg.logdir + "/checkpoints", exist_ok=True)
+
     def save_checkpoint(self, model, optimizer, epoch_num):
         checkpoint = {
             'model': model.state_dict(),
@@ -19,7 +22,7 @@ class Trainer():
             'epoch': epoch_num
         }
 
-        torch.save(checkpoint, self.cfg.checkpoint_dir + f"epoch_{epoch_num}.pth")
+        torch.save(checkpoint, self.cfg.logdir + f"/checkpoints/epoch_{epoch_num}.pth")
 
     def loss_func(self, disp_preds, disp_gt, valid, max_disp=400, gamma=0.9):
         n_predictions = len(disp_preds)
@@ -134,6 +137,7 @@ class Trainer():
                 self.val(model, epoch_num)
         
             # Save the model
+            # print("Saving checkpoint for epoch: ", epoch_num)
             self.save_checkpoint(model, optimizer, epoch_num)
 
 

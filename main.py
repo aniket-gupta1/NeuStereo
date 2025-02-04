@@ -138,7 +138,7 @@ def main(cfg, args, logger):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Make the tensorboard writer
-    writer = SummaryWriter(log_dir=args.log_path)
+    writer = SummaryWriter(log_dir=cfg.logdir)
 
     # Setup the dataloaders
     train_loader, train_sampler = setup_dataloaders(cfg, args, logger)
@@ -185,15 +185,16 @@ if __name__ == '__main__':
         for dataset_name in cfg.stage:
             logdir_name += dataset_name + "_"
 
-    args.logdir = os.path.join(args.logdir, logdir_name) 
+    cfg.logdir = os.path.join(cfg.logdir, logdir_name) 
+    args.logdir = cfg.logdir
 
     if args.exp_name is None and len(cfg.get("exp_name", "")) > 0:
         args.exp_name = cfg.exp_name
     
-    logger, args.log_path = prepare_logger(args)
+    logger, cfg.logdir = prepare_logger(args)
 
     # Save the config file to the log directory
-    config_out_fname = os.path.join(args.log_path, "config.yaml")
+    config_out_fname = os.path.join(cfg.logdir, "config.yaml")
     with open(args.config, "r") as in_fid, open(config_out_fname, "w") as out_fid:
         out_fid.write(f"Original config file name: {args.config}\n")
         out_fid.write(in_fid.read())
