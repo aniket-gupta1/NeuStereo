@@ -18,7 +18,7 @@ general:
   stage: ['flyingthings']
   num_epochs: 100
   max_disp: 400
-  val_stage: ['flyingthings']
+  val_stage: ['eth3d']
 
 model:
   feature_dim_s16: 128
