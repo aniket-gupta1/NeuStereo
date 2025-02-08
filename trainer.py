@@ -67,18 +67,20 @@ class Trainer():
             model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
 
             with torch.cuda.amp.autocast(enabled=True):
-                disp_preds = model(img1, img2, iters_s16=4, iters_s8=7)
+                disp_preds = model(img1, img2)
                 loss, metrics = self.loss_func(disp_preds, disp_gt, valid, self.cfg.max_disp)
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
 
-            bad_grad = False
-            for name, param in model.named_parameters():
-                if not torch.all(torch.isfinite(param.grad)):
-                    bad_grad = True
-                if bad_grad:
-                    print(name, param.grad.mean().item())
+            # # pdb.set_trace()
+            # bad_grad = False
+            # for name, param in model.named_parameters():
+            #     # print(param.grad)
+            #     if not torch.all(torch.isfinite(param.grad)):
+            #         bad_grad = True
+            #     if bad_grad:
+            #         print(name, param.grad.mean().item())
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
@@ -105,24 +107,22 @@ class Trainer():
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="kitti":
-                results = validate_kitti(model, config=dataset_config, stage=stage)
+                results = validate_kitti(model, config=dataset_config, stage=stage, device=self.device)
                 self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="eth3d":
-                results = validate_eth3d(model, config=dataset_config, stage=stage)
+                results = validate_eth3d(model, config=dataset_config, stage=stage, device=self.device)
                 self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="middlebury":
-                results = validate_middlebury(model, config=dataset_config, stage=stage)
+                results = validate_middlebury(model, config=dataset_config, stage=stage, device=self.device)
                 self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                 self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
-
-            
 
     def fit(self, model, train_loader, train_sampler):
         # Step 1: Configure the optimizer, mixed precision, learning rate scheduler

@@ -105,13 +105,11 @@ def setup_dataloaders(cfg, args, logger):
     return train_loader, train_sampler
 
 def setup_model(cfg, args, logger, device):
-    if args.resume:
-        model = NeuStereo(cfg).to(device)
-        model.load_state_dict(torch.load(args.resume))
-        logger.info(f"Loaded model from checkpoint: {args.resume}")
     
-    # Setup the model
     model = NeuStereo(cfg).to(device)
+    if args.resume:
+        model.load_state_dict(torch.load(args.resume)['model'])
+        logger.info(f"Loaded model from checkpoint: {args.resume}")
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(

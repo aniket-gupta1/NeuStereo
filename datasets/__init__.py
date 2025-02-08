@@ -2,6 +2,8 @@ from .flying_chairs import FlyingChairs
 from .flying_things3d import FlyingThings3D
 from .mpi_sintel import MpiSintel
 from .kitti import KITTI
+from .eth3d import ETH3D
+from .middlebury import Middlebury
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -37,6 +39,14 @@ def build_dataset(config, stage, split='train'):
         clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass', validate_subset=(split == 'val'))
         final_dataset = FlyingThings3D(aug_params, dstype='frames_finalpass', validate_subset=(split == 'val'))
         train_dataset = clean_dataset + final_dataset
+    
+    elif stage == "eth3d":
+        aug_params = {}
+        train_dataset = ETH3D(aug_params, split='training')
+
+    elif stage == "middlebury":
+        aug_params = {}
+        train_dataset = Middlebury(aug_params, split='2014')
 
     elif stage == 'sintel':
         crop_size = (368, 768)

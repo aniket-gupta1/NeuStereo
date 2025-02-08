@@ -8,28 +8,36 @@ from tqdm import tqdm
 from datasets import build_dataset
 from utils import InputPadder
 import pdb
+import matplotlib.pyplot as plt
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 @torch.no_grad()
-def validate_eth3d(model, iters=32, mixed_prec=False):
+def validate_eth3d(model, config, stage, device, mixed_prec=True):
     """ Peform validation using the ETH3D (train) split """
     model.eval()
-    aug_params = {}
-    val_dataset = datasets.ETH3D(aug_params)
+    val_dataset = build_dataset(config, stage, split="train")
 
     out_list, epe_list = [], []
     for val_id in range(len(val_dataset)):
-        _, image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1[None].cuda()
-        image2 = image2[None].cuda()
+        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1.half()
+        image2 = image2.half()
+
+        image1 = image1[None].to(device)
+        image2 = image2[None].to(device)
 
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
+        
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
-        with autocast(enabled=mixed_prec):
-            _, flow_pr = model(image1, image2, iters=iters, test_mode=True)
+        with torch.cuda.amp.autocast(enabled=mixed_prec):
+            results = model(image1, image2)
+        
+        flow_pr = results[-1]
+
         flow_pr = padder.unpad(flow_pr.float()).cpu().squeeze(0)
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
         epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
@@ -114,6 +122,10 @@ def validate_things(model, config, stage, device, mixed_prec=True):
     out_list, epe_list = [], []
     for val_id in tqdm(range(len(val_dataset))):
         image1, image2, flow_gt, valid_gt = val_dataset[val_id]
+        # plt.imsave('image1.png', image1.permute(1,2,0).numpy()/255.0)
+        # plt.imsave('image2.png', image2.permute(1,2,0).numpy()/255.0)
+        # plt.imsave('disp_gt.png', flow_gt.permute(1,2,0).numpy().squeeze(), cmap='jet')
+
         image1 = image1.half()
         image2 = image2.half()
 
@@ -130,6 +142,10 @@ def validate_things(model, config, stage, device, mixed_prec=True):
         
         flow_pr = results[-1]
         # pdb.set_trace()
+        # plt.imsave('disp_pred.png', flow_pr[0].permute(1,2,0).cpu().numpy().squeeze(), cmap='jet')
+
+        # raise ValueError
+
 
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
@@ -139,6 +155,10 @@ def validate_things(model, config, stage, device, mixed_prec=True):
         val = (valid_gt.flatten() >= 0.5) & (flow_gt.abs().flatten() < 192)
 
         out = (epe > 1.0)
+
+        if np.isnan(epe[val].mean().item()): #TODO: Fix this part
+            continue
+        
         epe_list.append(epe[val].mean().item())
         out_list.append(out[val].cpu().numpy())
 
@@ -153,23 +173,30 @@ def validate_things(model, config, stage, device, mixed_prec=True):
 
 
 @torch.no_grad()
-def validate_middlebury(model, iters=32, split='F', mixed_prec=False):
+def validate_middlebury(model, config, stage, device, mixed_prec=True):
     """ Peform validation using the Middlebury-V3 dataset """
     model.eval()
-    aug_params = {}
-    val_dataset = datasets.Middlebury(aug_params, split=split)
+    val_dataset = build_dataset(config, stage, split="2014")
 
     out_list, epe_list = [], []
     for val_id in range(len(val_dataset)):
-        (imageL_file, _, _), image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1[None].cuda()
-        image2 = image2[None].cuda()
+        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1.half()
+        image2 = image2.half()
+
+        image1 = image1[None].to(device)
+        image2 = image2[None].to(device)
 
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
+        
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
-        with autocast(enabled=mixed_prec):
-            _, flow_pr = model(image1, image2, iters=iters, test_mode=True)
+        with torch.cuda.amp.autocast(enabled=mixed_prec):
+            results = model(image1, image2)
+        
+        flow_pr = results[-1]
+        
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
 
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)

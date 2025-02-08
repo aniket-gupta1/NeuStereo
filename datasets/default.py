@@ -24,7 +24,7 @@ class FlowDataset(data.Dataset):
         self.sparse = sparse
         self.virtual = virtual
 
-        if aug_params is not None:
+        if aug_params is not None and "crop_size" in aug_params:
             if sparse:
                 self.augmentor = SparseFlowAugmentor(**aug_params)
             else:
