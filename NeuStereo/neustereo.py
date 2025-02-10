@@ -20,8 +20,8 @@ class NeuStereo(torch.nn.Module):
         
         self.matching_s16 = matching.Matching()
 
-        self.corr_block_s16 = corr.CorrBlock(radius=4, levels=1)
-        self.corr_block_s8 = corr.CorrBlock(radius=4, levels=1)
+        # self.corr_block_s16 = corr.CorrBlock(radius=4, levels=1)
+        # self.corr_block_s8 = corr.CorrBlock(radius=4, levels=1)
 
         self.stereo_corr_block_s16 = corr.StereoCorrBlock(radius=4, levels=1)
         self.stereo_corr_block_s8 = corr.StereoCorrBlock(radius=4, levels=1)
@@ -36,16 +36,18 @@ class NeuStereo(torch.nn.Module):
                                            torch.nn.Conv2d(self.config.context_dim_s8, self.config.context_dim_s8, kernel_size=3, stride=1, padding=1, bias=False),
                                            torch.nn.BatchNorm2d(self.config.context_dim_s8))
 
-        self.refine_s16 = refine.Refine(self.config.context_dim_s16, self.config.iter_context_dim_s16, num_layers=5, levels=1, radius=4, inter_dim=128)
-        self.refine_s8 = refine.Refine(self.config.context_dim_s8, self.config.iter_context_dim_s8, num_layers=5, levels=1, radius=4, inter_dim=96)
+        # self.refine_s16 = refine.Refine(self.config.context_dim_s16, self.config.iter_context_dim_s16, num_layers=5, levels=1, radius=4, inter_dim=128)
+        # self.refine_s8 = refine.Refine(self.config.context_dim_s8, self.config.iter_context_dim_s8, num_layers=5, levels=1, radius=4, inter_dim=96)
 
         self.stereo_refine_s16 = refine.StereoRefine(self.config.context_dim_s16, self.config.iter_context_dim_s16, num_layers=5, levels=1, radius=4, inter_dim=128)
         self.stereo_refine_s8 = refine.StereoRefine(self.config.context_dim_s8, self.config.iter_context_dim_s8, num_layers=5, levels=1, radius=4, inter_dim=96)
 
         self.conv_s8 = backbone.ConvBlock(3, self.config.feature_dim_s1, kernel_size=8, stride=8, padding=0)
-        self.upsample_s8 = upsample.UpSample(self.config.feature_dim_s1, upsample_factor=8)
-
-        self.upsample_s8_layered_conv = upsample.LayeredResizeConv(dim=1, kernel_size=3)
+        
+        if self.config.upsample_method == "raft":
+            self.upsample_s8 = upsample.UpSample(self.config.feature_dim_s1, upsample_factor=8)
+        elif self.config.upsample_method == "layered_conv":
+            self.upsample_s8_layered_conv = upsample.LayeredResizeConv(dim=1, kernel_size=3)
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -349,13 +351,13 @@ class NeuStereo(torch.nn.Module):
             if self.training or i == iters_s8 - 1:
                 start_event.record()
 
-                # feature0_s1 = self.conv_s8(img0)
-                # up_flow0 = self.upsample_s8(feature0_s1, flow0) * 8
-                # flow_list.append(up_flow0[:, :1])
-
-                # feature0_s1 = self.conv_s8(img0)
-                up_flow0 = self.upsample_s8_layered_conv(flow0, img0)
-                flow_list.append(up_flow0[:, :1])
+                if self.config.upsample_method == "raft":
+                    feature0_s1 = self.conv_s8(img0)
+                    up_flow0 = self.upsample_s8(feature0_s1, flow0) * 8
+                    flow_list.append(up_flow0[:, :1])
+                elif self.config.upsample_method == "layered_conv":
+                    up_flow0 = self.upsample_s8_layered_conv(flow0, img0)
+                    flow_list.append(up_flow0[:, :1])
                 
                 end_event.record()
                 torch.cuda.synchronize()

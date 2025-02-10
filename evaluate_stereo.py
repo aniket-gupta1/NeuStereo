@@ -47,7 +47,7 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
         out = (epe_flattened > 1.0)
         image_out = out[val].float().mean().item()
         image_epe = epe_flattened[val].mean().item()
-        logging.info(f"ETH3D {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
+        # logging.info(f"ETH3D {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
         epe_list.append(image_epe)
         out_list.append(image_out)
 
@@ -208,7 +208,7 @@ def validate_middlebury(model, config, stage, device, mixed_prec=True):
         out = (epe_flattened > 2.0)
         image_out = out[val].float().mean().item()
         image_epe = epe_flattened[val].mean().item()
-        logging.info(f"Middlebury Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
+        # logging.info(f"Middlebury Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
         epe_list.append(image_epe)
         out_list.append(image_out)
 
@@ -218,5 +218,5 @@ def validate_middlebury(model, config, stage, device, mixed_prec=True):
     epe = np.mean(epe_list)
     d1 = 100 * np.mean(out_list)
 
-    print(f"Validation Middlebury{split}: EPE {epe}, D1 {d1}")
+    print(f"Validation Middlebury: EPE {epe}, D1 {d1}")
     return {f'epe': epe, f'd1': d1}

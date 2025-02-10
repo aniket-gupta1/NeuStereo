@@ -1,5 +1,7 @@
 from .flying_chairs import FlyingChairs
 from .flying_things3d import FlyingThings3D
+from .driving import Driving
+from .monkaa import Monkaa
 from .mpi_sintel import MpiSintel
 from .kitti import KITTI
 from .eth3d import ETH3D
@@ -23,7 +25,6 @@ class MultiDataset(Dataset):
         else:
             sample_index = index - self.cumsum_lens[dataset_index-1]
 
-        
         data = self.datasets[dataset_index][sample_index]
         return data
 
@@ -37,8 +38,18 @@ def build_dataset(config, stage, split='train'):
         aug_params = {'crop_size': (384, 768), 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
 
         clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass', validate_subset=(split == 'val'))
-        final_dataset = FlyingThings3D(aug_params, dstype='frames_finalpass', validate_subset=(split == 'val'))
-        train_dataset = clean_dataset + final_dataset
+        # final_dataset = FlyingThings3D(aug_params, dstype='frames_finalpass', validate_subset=(split == 'val'))
+        train_dataset = clean_dataset
+
+    elif stage == "driving":
+        aug_params = {'crop_size': (384, 768), 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
+        clean_dataset = Driving(aug_params, dstype='frames_cleanpass')
+        train_dataset = clean_dataset
+    
+    elif stage == "monkaa":
+        aug_params = {'crop_size': (384, 768), 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
+        clean_dataset = Driving(aug_params, dstype='frames_cleanpass')
+        train_dataset = clean_dataset 
     
     elif stage == "eth3d":
         aug_params = {}
