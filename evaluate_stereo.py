@@ -20,6 +20,7 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
     val_dataset = build_dataset(config, stage, split="train")
 
     out_list, epe_list = [], []
+    elapsed_list = []
     for val_id in range(len(val_dataset)):
         image1, image2, flow_gt, valid_gt = val_dataset[val_id]
         image1 = image1.half()
@@ -33,8 +34,15 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
         
         model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
         with torch.cuda.amp.autocast(enabled=mixed_prec):
             results = model(image1, image2)
+        end_event.record()
+        torch.cuda.synchronize()
+        elapsed_time_ms = start_event.elapsed_time(end_event)
+        elapsed_list.append(elapsed_time_ms)
         
         flow_pr = results[-1]
 
@@ -57,6 +65,8 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
     epe = np.mean(epe_list)
     d1 = 100 * np.mean(out_list)
 
+    elapsed_list = np.array(elapsed_list)
+    print(f"Elapsed time: {np.mean(elapsed_list)}ms")
     print("Validation ETH3D: EPE %f, D1 %f" % (epe, d1))
     return {'epe': epe, 'd1': d1}
 

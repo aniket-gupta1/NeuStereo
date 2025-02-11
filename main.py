@@ -139,7 +139,8 @@ def main(cfg, args, logger):
     writer = SummaryWriter(log_dir=cfg.logdir)
 
     # Setup the dataloaders
-    train_loader, train_sampler = setup_dataloaders(cfg, args, logger)
+    if not args.val_only:
+        train_loader, train_sampler = setup_dataloaders(cfg, args, logger)
 
     # Setup the model
     model = setup_model(cfg, args, logger, device)
