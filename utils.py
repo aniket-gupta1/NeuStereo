@@ -9,6 +9,7 @@ import argparse
 import logging
 from datetime import datetime
 import coloredlogs
+import shutil
 
 import yaml
 
@@ -79,15 +80,11 @@ def prepare_logger(opt: argparse.Namespace, log_path: str = None):
     """
 
     if log_path is None:
-        if opt.dev:
-            log_path = '../logdev'
-            shutil.rmtree(log_path, ignore_errors=True)
+        datetime_str = datetime.now().strftime('%y%m%d_%H%M%S')
+        if opt.exp_name is not None:
+            log_path = os.path.join(opt.logdir, datetime_str + '_' + opt.exp_name)
         else:
-            datetime_str = datetime.now().strftime('%y%m%d_%H%M%S')
-            if opt.exp_name is not None:
-                log_path = os.path.join(opt.logdir, datetime_str + '_' + opt.exp_name)
-            else:
-                log_path = os.path.join(opt.logdir, datetime_str)
+            log_path = os.path.join(opt.logdir, datetime_str)
     os.makedirs(log_path, exist_ok=True)
 
     fmt = '%(asctime)s [%(levelname)s] %(name)s - %(message)s'

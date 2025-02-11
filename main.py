@@ -183,6 +183,9 @@ if __name__ == '__main__':
     else:
         for dataset_name in cfg.stage:
             logdir_name += dataset_name + "_"
+    
+    if args.dev:
+        cfg.logdir = "logdev/"
 
     cfg.logdir = os.path.join(cfg.logdir, logdir_name) 
     args.logdir = cfg.logdir
