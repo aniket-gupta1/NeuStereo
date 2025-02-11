@@ -9,9 +9,39 @@ from datasets import build_dataset
 from utils import InputPadder
 import pdb
 import matplotlib.pyplot as plt
+import torch.utils.benchmark as benchmark
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def benchmark_model(model, val_dataset, device):
+    elapsed_list = []
+    for val_id in range(len(val_dataset)):
+        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1[None].to(device)
+        image2 = image2[None].to(device)
+
+        padder = InputPadder(image1.shape, divis_by=32)
+        image1, image2 = padder.pad(image1, image2)
+        
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+
+        # Benchmark using torch.utils.benchmark
+        timer = benchmark.Timer(
+            stmt=""" 
+            with torch.no_grad(), torch.cuda.amp.autocast(enabled=True):  
+                results = model(image1, image2)
+            """,
+            globals={"model": model, "image1": image1, "image2": image2},
+            num_threads=torch.get_num_threads(),
+        )
+
+        # Run timing (N=10 gives better stability)
+        time_taken = timer.timeit(1).mean * 1000  # Convert to milliseconds
+        elapsed_list.append(time_taken)
+
+    return np.mean(elapsed_list)
+
 
 @torch.no_grad()
 def validate_eth3d(model, config, stage, device, mixed_prec=True):
@@ -20,7 +50,12 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
     val_dataset = build_dataset(config, stage, split="train")
 
     out_list, epe_list = [], []
-    elapsed_list = []
+
+    # Benchmark the model for speed
+    elapsed_time = benchmark_model(model, val_dataset, device)
+    print(f"Elapsed time: {elapsed_time} ms")
+
+
     for val_id in range(len(val_dataset)):
         image1, image2, flow_gt, valid_gt = val_dataset[val_id]
         image1 = image1.half()
@@ -34,16 +69,10 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
         
         model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        start_event.record()
-        with torch.cuda.amp.autocast(enabled=mixed_prec):
+        # Inference
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=mixed_prec):
             results = model(image1, image2)
-        end_event.record()
-        torch.cuda.synchronize()
-        elapsed_time_ms = start_event.elapsed_time(end_event)
-        elapsed_list.append(elapsed_time_ms)
-        
+       
         flow_pr = results[-1]
 
         flow_pr = padder.unpad(flow_pr.float()).cpu().squeeze(0)
@@ -65,8 +94,6 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
     epe = np.mean(epe_list)
     d1 = 100 * np.mean(out_list)
 
-    elapsed_list = np.array(elapsed_list)
-    print(f"Elapsed time: {np.mean(elapsed_list)}ms")
     print("Validation ETH3D: EPE %f, D1 %f" % (epe, d1))
     return {'epe': epe, 'd1': d1}
 
