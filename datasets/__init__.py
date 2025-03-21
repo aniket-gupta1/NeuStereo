@@ -57,7 +57,7 @@ def build_dataset(config, stage, split='train'):
 
     elif stage == "middlebury":
         aug_params = {}
-        train_dataset = Middlebury(aug_params, split='2014')
+        train_dataset = Middlebury(aug_params, split='Q')
 
     elif stage == 'sintel':
         crop_size = (368, 768)

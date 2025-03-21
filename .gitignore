@@ -1,6 +1,7 @@
 logs/
 logdev/
 scripts/
+outputs/
 *.pth
 *.pyc
 __pycache__/

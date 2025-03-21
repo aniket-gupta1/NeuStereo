@@ -8,7 +8,7 @@ import pdb
 
 class Middlebury(FlowDataset):
     def __init__(self, aug_params=None, 
-                 split="2014",
+                 split="Q",
                  root='/work/nufr/aniket/Datasets/Stereo_Disp/Middlebury',
                  ):
     
@@ -22,7 +22,7 @@ class Middlebury(FlowDataset):
                     self.image_list += [ [str(scene / "im0.png"), str(scene / f"im1{s}.png")] ]
                     self.disp_list += [ str(scene / "disp0.pfm") ]
         else:
-            lines = list(map(osp.basename, glob(os.path.join(root, "MiddEval3/trainingF/*"))))
+            lines = list(map(osp.basename, glob(os.path.join(root, f"MiddEval3/training{split}/*"))))
             lines = list(filter(lambda p: any(s in p.split('/') for s in Path(os.path.join(root, "MiddEval3/official_train.txt")).read_text().splitlines()), lines))
             image1_list = sorted([os.path.join(root, "MiddEval3", f'training{split}', f'{name}/im0.png') for name in lines])
             image2_list = sorted([os.path.join(root, "MiddEval3", f'training{split}', f'{name}/im1.png') for name in lines])
@@ -30,4 +30,4 @@ class Middlebury(FlowDataset):
             assert len(image1_list) == len(image2_list) == len(disp_list) > 0, [image1_list, split]
             for img1, img2, disp in zip(image1_list, image2_list, disp_list):
                 self.image_list += [ [img1, img2] ]
-                self.disparity_list += [ disp ]
+                self.disp_list += [ disp ]

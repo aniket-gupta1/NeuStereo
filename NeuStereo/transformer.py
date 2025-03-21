@@ -70,6 +70,8 @@ class FeatureAttention(torch.nn.Module):
             self.norm = torch.nn.BatchNorm2d(feature_dim)
 
     def forward(self, concat_features0):
+
+        # 2D Attention ->
         b, c, h, w = concat_features0.shape
 
         concat_features0 = concat_features0.flatten(-2).permute(0, 2, 1)  # [B, H*W, C]
@@ -84,6 +86,8 @@ class FeatureAttention(torch.nn.Module):
         if self.post_norm:
             concat_features0 = self.norm(concat_features0)
 
+
+        # 1D Attention ->
         # B,C,H,W = concat_features0.shape
         # concat_features0 = concat_features0.permute(0, 2, 1, 3).reshape(B * H, W, C)  # [B*H, W, C]
         # concat_features1 = torch.cat(concat_features0.chunk(chunks=2, dim=0)[::-1], dim=0)

@@ -6,7 +6,7 @@ from .default import FlowDataset
 
 class KITTI(FlowDataset):
     def __init__(self, aug_params=None, split='training',
-                 root='datasets/KITTI',
+                 root='/work/nufr/aniket/Datasets/Stereo_Disp/KITTI',
                  ):
         super(KITTI, self).__init__(aug_params, sparse=True,
                                     )

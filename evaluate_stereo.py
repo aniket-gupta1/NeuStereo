@@ -1,4 +1,5 @@
 import sys
+import os
 import argparse
 import time
 import logging
@@ -13,6 +14,35 @@ import torch.utils.benchmark as benchmark
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def benchmark_model_fixed(model, device):
+    elapsed_list = []
+    print("Working on image size: (512, 384)")
+    for i in range(50):
+        image1, image2 = torch.rand(3, 384, 512), torch.rand(3, 384, 512)
+        image1 = image1[None].to(device)
+        image2 = image2[None].to(device)
+
+        padder = InputPadder(image1.shape, divis_by=16)
+        image1, image2 = padder.pad(image1, image2)
+        
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+
+        # Benchmark using torch.utils.benchmark
+        timer = benchmark.Timer(
+            stmt=""" 
+            with torch.no_grad(), torch.cuda.amp.autocast(enabled=True):  
+                results = model(image1, image2)
+            """,
+            globals={"model": model, "image1": image1, "image2": image2},
+            num_threads=torch.get_num_threads(),
+        )
+
+        # Run timing (N=10 gives better stability)
+        time_taken = timer.timeit(10).mean * 1000  # Convert to milliseconds
+        elapsed_list.append(time_taken)
+
+    return np.mean(elapsed_list)
 
 def benchmark_model(model, val_dataset, device):
     elapsed_list = []
@@ -42,24 +72,54 @@ def benchmark_model(model, val_dataset, device):
 
     return np.mean(elapsed_list)
 
+def save_outputs_func(image1, image2, disp_gt, disp_pred, val_id, folder_name):
+    # Make the output folder
+    os.makedirs(f"outputs/{folder_name}", exist_ok=True)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10))  # Create a 2x2 grid
+    # Convert tensors to NumPy and normalize if needed
+    img1_np = image1.permute(1, 2, 0).numpy() / 255.0
+    img2_np = image2.permute(1, 2, 0).numpy() / 255.0
+    disp_gt_np = disp_gt.permute(1, 2, 0).numpy().squeeze()
+
+    # Display images
+    axes[0, 0].imshow(img1_np)
+    axes[0, 0].set_title("Image 1")
+    axes[0, 0].axis("off")
+
+    axes[0, 1].imshow(img2_np)
+    axes[0, 1].set_title("Image 2")
+    axes[0, 1].axis("off")
+
+    axes[1, 0].imshow(disp_gt_np, cmap="jet")
+    axes[1, 0].set_title("Ground Truth Disp.")
+    axes[1, 0].axis("off")
+
+    pred_disp = disp_pred[0].permute(1,2,0).cpu().numpy().squeeze()
+    axes[1, 1].imshow(pred_disp, cmap="jet")
+    axes[1, 1].set_title("Predicted Disp.")
+    axes[1, 1].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(f"outputs/{folder_name}/comparison_{val_id}.png")
 
 @torch.no_grad()
-def validate_eth3d(model, config, stage, device, mixed_prec=True):
+def validate_eth3d(model, config, stage, device, mixed_prec=True, save_outputs=False):
     """ Peform validation using the ETH3D (train) split """
     model.eval()
     val_dataset = build_dataset(config, stage, split="train")
 
+    logging.info(f"Evaluating on ETH3D. Total images: {len(val_dataset)}")
     out_list, epe_list = [], []
 
     # Benchmark the model for speed
-    elapsed_time = benchmark_model(model, val_dataset, device)
-    print(f"Elapsed time: {elapsed_time} ms")
-
+    # elapsed_time = benchmark_model(model, val_dataset, device)
+    # print(f"Elapsed time: {elapsed_time} ms")
 
     for val_id in range(len(val_dataset)):
-        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1.half()
-        image2 = image2.half()
+        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1_inp.half()
+        image2 = image2_inp.half()
 
         image1 = image1[None].to(device)
         image2 = image2[None].to(device)
@@ -74,6 +134,9 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
             results = model(image1, image2)
        
         flow_pr = results[-1]
+        # Save the outputs
+        if save_outputs:
+            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'eth3d')
 
         flow_pr = padder.unpad(flow_pr.float()).cpu().squeeze(0)
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
@@ -99,29 +162,36 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True):
 
 
 @torch.no_grad()
-def validate_kitti(model, iters=32, mixed_prec=False):
+def validate_kitti(model, config, stage, device, mixed_prec=True, save_outputs=False):
     """ Peform validation using the KITTI-2015 (train) split """
     model.eval()
-    aug_params = {}
-    val_dataset = datasets.KITTI(aug_params, image_set='training')
+    val_dataset = build_dataset(config, stage, split="train")
     torch.backends.cudnn.benchmark = True
 
-    out_list, epe_list, elapsed_list = [], [], []
+    logging.info(f"Evaluating on KITTI. Total images: {len(val_dataset)}")
+
+    out_list, epe_list = [], []
     for val_id in range(len(val_dataset)):
-        _, image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1[None].cuda()
-        image2 = image2[None].cuda()
+        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1_inp.half()
+        image2 = image2_inp.half()
+
+        image1 = image1[None].to(device)
+        image2 = image2[None].to(device)
 
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
+        
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
-        with autocast(enabled=mixed_prec):
-            start = time.time()
-            _, flow_pr = model(image1, image2, iters=iters, test_mode=True)
-            end = time.time()
+        with torch.cuda.amp.autocast(enabled=mixed_prec):
+            results = model(image1, image2)
 
-        if val_id > 50:
-            elapsed_list.append(end-start)
+        flow_pr = results[-1]
+
+        if save_outputs:
+            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'KITTI')
+
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
 
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
@@ -133,38 +203,33 @@ def validate_kitti(model, iters=32, mixed_prec=False):
         out = (epe_flattened > 3.0)
         image_out = out[val].float().mean().item()
         image_epe = epe_flattened[val].mean().item()
-        if val_id < 9 or (val_id+1)%10 == 0:
-            logging.info(f"KITTI Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}. Runtime: {format(end-start, '.3f')}s ({format(1/(end-start), '.2f')}-FPS)")
+        # logging.info(f"KITTI Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}. Runtime: {format(end-start, '.3f')}s ({format(1/(end-start), '.2f')}-FPS)")
         epe_list.append(epe_flattened[val].mean().item())
         out_list.append(out[val].cpu().numpy())
 
     epe_list = np.array(epe_list)
-    out_list = np.concatenate(out_list)
+    out_list = np.array(out_list)
 
     epe = np.mean(epe_list)
     d1 = 100 * np.mean(out_list)
 
-    avg_runtime = np.mean(elapsed_list)
-
-    print(f"Validation KITTI: EPE {epe}, D1 {d1}, {format(1/avg_runtime, '.2f')}-FPS ({format(avg_runtime, '.3f')}s)")
+    print(f"Validation KITTI: EPE {epe}, D1 {d1}")
     return {'epe': epe, 'd1': d1}
 
 
 @torch.no_grad()
-def validate_things(model, config, stage, device, mixed_prec=True):
+def validate_things(model, config, stage, device, mixed_prec=True, save_outputs=False):
     """ Peform validation using the FlyingThings3D (TEST) split """
     model.eval()
     val_dataset = build_dataset(config, stage, split="val")
 
+    logging.info(f"Evaluating on FlyingThings3D. Total images: {len(val_dataset)}")
+
     out_list, epe_list = [], []
     for val_id in tqdm(range(len(val_dataset))):
-        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        # plt.imsave('image1.png', image1.permute(1,2,0).numpy()/255.0)
-        # plt.imsave('image2.png', image2.permute(1,2,0).numpy()/255.0)
-        # plt.imsave('disp_gt.png', flow_gt.permute(1,2,0).numpy().squeeze(), cmap='jet')
-
-        image1 = image1.half()
-        image2 = image2.half()
+        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1_inp.half()
+        image2 = image2_inp.half()
 
         image1 = image1[None].to(device)
         image2 = image2[None].to(device)
@@ -178,11 +243,10 @@ def validate_things(model, config, stage, device, mixed_prec=True):
             results = model(image1, image2)
         
         flow_pr = results[-1]
-        # pdb.set_trace()
-        # plt.imsave('disp_pred.png', flow_pr[0].permute(1,2,0).cpu().numpy().squeeze(), cmap='jet')
 
-        # raise ValueError
-
+        # Save the outputs
+        if save_outputs:
+            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'flyingthings')
 
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
@@ -210,16 +274,25 @@ def validate_things(model, config, stage, device, mixed_prec=True):
 
 
 @torch.no_grad()
-def validate_middlebury(model, config, stage, device, mixed_prec=True):
+def validate_middlebury(model, config, stage, device, mixed_prec=True, save_outputs=False):
     """ Peform validation using the Middlebury-V3 dataset """
     model.eval()
     val_dataset = build_dataset(config, stage, split="2014")
 
+    logging.info(f"Evaluating on Middlebury. Total images: {len(val_dataset)}")
+    
+    # # Benchmark the model for speed
+    # elapsed_time = benchmark_model_fixed(model, device)
+    # print(f"Elapsed time: {elapsed_time} ms")
+    
+    # elapsed_time = benchmark_model(model, val_dataset, device)
+    # print(f"Elapsed time: {elapsed_time} ms")
+
     out_list, epe_list = [], []
     for val_id in range(len(val_dataset)):
-        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1.half()
-        image2 = image2.half()
+        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
+        image1 = image1_inp.half()
+        image2 = image2_inp.half()
 
         image1 = image1[None].to(device)
         image2 = image2[None].to(device)
@@ -233,6 +306,10 @@ def validate_middlebury(model, config, stage, device, mixed_prec=True):
             results = model(image1, image2)
         
         flow_pr = results[-1]
+
+        # Save the outputs
+        if save_outputs:
+            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'middlebury')
         
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
 

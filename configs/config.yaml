@@ -18,7 +18,7 @@ general:
   stage: ['flyingthings', 'driving', 'monkaa']
   num_epochs: 100
   max_disp: 400
-  val_stage: ['eth3d']
+  val_stage: ['eth3d', 'middlebury', 'kitti']
 
 model:
   feature_dim_s16: 128
