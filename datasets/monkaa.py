@@ -7,7 +7,7 @@ import pdb
 
 class Monkaa(FlowDataset):
     def __init__(self, aug_params=None,
-                 root='/work/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
+                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
                  dstype='frames_cleanpass',
                  ):
         super(Monkaa, self).__init__(aug_params)

@@ -8,7 +8,7 @@ import pdb
 class ETH3D(FlowDataset):
     def __init__(self, aug_params=None, 
                  split="training",
-                 root='/work/nufr/aniket/Datasets/Stereo_Disp/ETH3D',
+                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/ETH3D',
                  ):
     
         super(ETH3D, self).__init__(aug_params)
