@@ -6,6 +6,7 @@ from .mpi_sintel import MpiSintel
 from .kitti import KITTI
 from .eth3d import ETH3D
 from .middlebury import Middlebury
+from .foundation_stereo import FoundationStereo
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -119,5 +120,26 @@ def build_dataset(config, stage, split='train'):
         neu_dataset = NeuSim(aug_params)
 
         train_dataset = things_clean + things_final + 2 * neu_dataset
+
+    elif stage == 'foundation_stereo':
+        crop_size = (320, 896)  # Adjust based on your image sizes
+        aug_params = {'crop_size': crop_size, 'min_scale': -0.2, 'max_scale': 0.6, 'do_flip': True}
+        
+        # Create Foundation Stereo dataset
+        foundation_dataset = FoundationStereo(
+            aug_params=aug_params,
+            root='/projects/NEUFR/data/FSD',  # Update this path
+            split_folders='all',  # Start with one split, can add more later
+            test_set=(split == 'test'),
+            validate_subset=(split == 'val'),
+            max_scenes_per_split = None,
+        )
+        
+        train_dataset = foundation_dataset
+        print(f"Foundation Stereo dataset length: {len(foundation_dataset)}")
+
+    else:
+        raise ValueError(f"Unknown dataset stage: {config.stage}")
+
 
     return train_dataset
