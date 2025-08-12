@@ -1,5 +1,5 @@
 dataset:
-  path: /work/nufr/aniket/Datasets/Stereo_Disp/Driving/
+  path: /projects/nufr/aniket/Datasets/Stereo_Disp/Driving/
   train_split: train
   val_split: val
   weight: 1

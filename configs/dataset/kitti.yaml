@@ -1,4 +1,4 @@
 dataset: 
-  path: data/kitti/
+  path: /projects/nufr/aniket/Datasets/Stereo_Disp/KITTI
   train_split: train_kitti
   val_split: val_kitti
