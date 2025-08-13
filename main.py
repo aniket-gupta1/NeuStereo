@@ -104,11 +104,80 @@ def setup_dataloaders(cfg, args, logger):
 
     return train_loader, train_sampler
 
+def load_checkpoint_flexible(model, checkpoint_path, device, force_single_gpu=False):
+    """
+    Flexible checkpoint loader that adapts to current GPU setup
+    
+    Args:
+        model: Your model
+        checkpoint_path: Path to checkpoint
+        device: Current device
+        force_single_gpu: Force single GPU mode even if multiple GPUs available
+    """
+    
+    # Load checkpoint to CPU first
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Extract state dict
+    if 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    else:
+        state_dict = checkpoint
+    
+    # Detect if checkpoint is from multi-GPU training
+    checkpoint_is_multigpu = any(k.startswith('module.') for k in state_dict.keys())
+    
+    # Detect current setup
+    current_is_multigpu = (torch.cuda.device_count() > 1 and 
+                          hasattr(model, 'module')) or force_single_gpu == False
+    
+    print(f"Checkpoint is multi-GPU: {checkpoint_is_multigpu}")
+    print(f"Current setup is multi-GPU: {current_is_multigpu}")
+    print(f"Available GPUs: {torch.cuda.device_count()}")
+    
+    # Handle different scenarios
+    if checkpoint_is_multigpu and not current_is_multigpu:
+        # Multi-GPU checkpoint → Single GPU
+        print("Converting multi-GPU checkpoint to single GPU")
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key[7:] if key.startswith('module.') else key
+            new_state_dict[new_key] = value
+        state_dict = new_state_dict
+        
+    elif not checkpoint_is_multigpu and current_is_multigpu:
+        # Single GPU checkpoint → Multi-GPU
+        print("Converting single GPU checkpoint to multi-GPU")
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = f'module.{key}' if not key.startswith('module.') else key
+            new_state_dict[new_key] = value
+        state_dict = new_state_dict
+        
+    else:
+        # Same format, no conversion needed
+        print("Checkpoint format matches current setup")
+    
+    # Load state dict
+    try:
+        model.load_state_dict(state_dict, strict=True)
+        print("Checkpoint loaded successfully")
+    except RuntimeError as e:
+        print(f"Strict loading failed: {e}")
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            print(f"Missing keys: {len(missing_keys)}")
+        if unexpected_keys:
+            print(f"Unexpected keys: {len(unexpected_keys)}")
+        print("Partial loading completed")
+    
+    return model
+
 def setup_model(cfg, args, logger, device):
     
     model = NeuStereo(cfg).to(device)
     if args.resume:
-        model.load_state_dict(torch.load(args.resume)['model'])
+        model = load_checkpoint_flexible(model, args.resume, device, logger)
         logger.info(f"Loaded model from checkpoint: {args.resume}")
 
     if args.distributed:
@@ -117,8 +186,8 @@ def setup_model(cfg, args, logger, device):
             device_ids=[args.local_rank],
             output_device=args.local_rank
         )
-
-    logger.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
+    if args.local_rank == 0:
+        logger.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
 
     return model
 

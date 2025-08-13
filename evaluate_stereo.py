@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 import torch.utils.benchmark as benchmark
 
 def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    return sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
 
 def benchmark_model_fixed(model, device):
     elapsed_list = []
@@ -26,7 +28,8 @@ def benchmark_model_fixed(model, device):
         padder = InputPadder(image1.shape, divis_by=16)
         image1, image2 = padder.pad(image1, image2)
         
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        actual_model = model.module if hasattr(model, 'module') else model
+        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         # Benchmark using torch.utils.benchmark
         timer = benchmark.Timer(
@@ -54,7 +57,8 @@ def benchmark_model(model, val_dataset, device):
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
         
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        actual_model = model.module if hasattr(model, 'module') else model
+        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         # Benchmark using torch.utils.benchmark
         timer = benchmark.Timer(
@@ -127,7 +131,8 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True, save_outputs=F
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
         
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        actual_model = model.module if hasattr(model, 'module') else model
+        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         # Inference
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=mixed_prec):
@@ -167,52 +172,51 @@ def validate_kitti(model, config, stage, device, mixed_prec=True, save_outputs=F
     model.eval()
     val_dataset = build_dataset(config, stage, split="train")
     torch.backends.cudnn.benchmark = True
-
     logging.info(f"Evaluating on KITTI. Total images: {len(val_dataset)}")
-
-    out_list, epe_list = [], []
+    
+    # Store individual metrics instead of arrays
+    epe_list = []
+    d1_list = []  # Store D1 percentages instead of boolean arrays
+    
     for val_id in range(len(val_dataset)):
         image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
         image1 = image1_inp.half()
         image2 = image2_inp.half()
-
         image1 = image1[None].to(device)
         image2 = image2[None].to(device)
-
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
         
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
-
+        actual_model = model.module if hasattr(model, 'module') else model
+        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        
         with torch.cuda.amp.autocast(enabled=mixed_prec):
             results = model(image1, image2)
-
-        flow_pr = results[-1]
-
+            flow_pr = results[-1]
+            
         if save_outputs:
             save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'KITTI')
-
+            
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
-
         assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
+        
         epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-
         epe_flattened = epe.flatten()
         val = valid_gt.flatten() >= 0.5
-
         out = (epe_flattened > 3.0)
-        image_out = out[val].float().mean().item()
-        image_epe = epe_flattened[val].mean().item()
-        # logging.info(f"KITTI Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}. Runtime: {format(end-start, '.3f')}s ({format(1/(end-start), '.2f')}-FPS)")
-        epe_list.append(epe_flattened[val].mean().item())
-        out_list.append(out[val].cpu().numpy())
-
-    epe_list = np.array(epe_list)
-    out_list = np.array(out_list)
-
+        
+        # Calculate metrics per image
+        image_d1 = out[val].float().mean().item()  # D1 percentage for this image
+        image_epe = epe_flattened[val].mean().item()  # EPE for this image
+        
+        # Store individual metrics
+        epe_list.append(image_epe)
+        d1_list.append(image_d1)
+    
+    # Calculate overall metrics
     epe = np.mean(epe_list)
-    d1 = 100 * np.mean(out_list)
-
+    d1 = 100 * np.mean(d1_list)  # Convert to percentage
+    
     print(f"Validation KITTI: EPE {epe}, D1 {d1}")
     return {'epe': epe, 'd1': d1}
 
@@ -237,7 +241,8 @@ def validate_things(model, config, stage, device, mixed_prec=True, save_outputs=
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
 
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        actual_model = model.module if hasattr(model, 'module') else model
+        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         with torch.cuda.amp.autocast(enabled=mixed_prec):
             results = model(image1, image2)
@@ -300,7 +305,8 @@ def validate_middlebury(model, config, stage, device, mixed_prec=True, save_outp
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
         
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        actual_model = model.module if hasattr(model, 'module') else model
+        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         with torch.cuda.amp.autocast(enabled=mixed_prec):
             results = model(image1, image2)

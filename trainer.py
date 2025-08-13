@@ -15,9 +15,15 @@ class Trainer():
         # Make the checkpoint directory
         os.makedirs(self.cfg.logdir + "/checkpoints", exist_ok=True)
 
+    def get_model(self, model):
+        """Get the actual model from DDP wrapper if needed"""
+        return model.module if hasattr(model, 'module') else model
+
     def save_checkpoint(self, model, optimizer, epoch_num):
+        actual_model = self.get_model(model)
+        
         checkpoint = {
-            'model': model.state_dict(),
+            'model': actual_model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'epoch': epoch_num
         }
@@ -64,7 +70,8 @@ class Trainer():
             img1 = img1.half()
             img2 = img2.half()
 
-            model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
+            actual_model = self.get_model(model)
+            actual_model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
 
             with torch.cuda.amp.autocast(enabled=True):
                 disp_preds = model(img1, img2)
@@ -87,13 +94,14 @@ class Trainer():
             scaler.step(optimizer)
             scaler.update()
 
-            self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {round(metrics['epe'], 3)}, Mag: {round(metrics['mag'], 3)}, LR: {optimizer.param_groups[-1]['lr']}")
-            
-            # Add the loss, epe, mag and learning rate to tensorboard
-            self.tensorboard_writer.add_scalar('Train/Loss', loss.item(), epoch_num * len(train_loader) + i)
-            self.tensorboard_writer.add_scalar('Train/EPE', metrics['epe'], epoch_num * len(train_loader) + i)
-            self.tensorboard_writer.add_scalar('Train/Mag', metrics['mag'], epoch_num * len(train_loader) + i)
-            self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + i)
+            if self.args.local_rank == 0:
+                self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {round(metrics['epe'], 3)}, Mag: {round(metrics['mag'], 3)}, LR: {optimizer.param_groups[-1]['lr']}")
+                
+                # Add the loss, epe, mag and learning rate to tensorboard
+                self.tensorboard_writer.add_scalar('Train/Loss', loss.item(), epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/EPE', metrics['epe'], epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/Mag', metrics['mag'], epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + i)
 
     def val(self, model, epoch_num=1):
 
@@ -102,27 +110,31 @@ class Trainer():
 
             if stage=="flyingthings":
                 results = validate_things(model, config=dataset_config, stage=stage, device=self.device)
-                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                if self.args.local_rank == 0:
+                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="kitti":
-                results = validate_kitti(model, config=dataset_config, stage=stage, device=self.device)
-                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                results = validate_kitti(model, config=dataset_config, stage=stage, device=self.device, save_outputs=True)
+                if self.args.local_rank == 0:    
+                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="eth3d":
-                results = validate_eth3d(model, config=dataset_config, stage=stage, device=self.device)
-                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                results = validate_eth3d(model, config=dataset_config, stage=stage, device=self.device, save_outputs=True)
+                if self.args.local_rank == 0:    
+                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="middlebury":
-                results = validate_middlebury(model, config=dataset_config, stage=stage, device=self.device)
-                self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
-                self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                results = validate_middlebury(model, config=dataset_config, stage=stage, device=self.device, save_outputs=True)
+                if self.args.local_rank == 0:    
+                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
     def fit(self, model, train_loader, train_sampler):
         # Step 1: Configure the optimizer, mixed precision, learning rate scheduler
@@ -133,12 +145,11 @@ class Trainer():
         for epoch_num in range(1, self.cfg.num_epochs+1):
             self.train(model, train_loader, optimizer, scaler, epoch_num)
 
+            # Save the checkpoint before validation
+            self.save_checkpoint(model, optimizer, epoch_num)
+
             if epoch_num % self.cfg.val_freq == 0:
                 self.val(model, epoch_num)
-        
-            # Save the model
-            # print("Saving checkpoint for epoch: ", epoch_num)
-            self.save_checkpoint(model, optimizer, epoch_num)
 
 
 
