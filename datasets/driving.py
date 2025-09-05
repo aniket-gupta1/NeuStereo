@@ -7,7 +7,7 @@ import pdb
 
 class Driving(FlowDataset):
     def __init__(self, aug_params=None,
-                 root='/work/nufr/aniket/Datasets/Stereo_Disp/Driving',
+                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/Driving',
                  dstype='frames_cleanpass',
                  ):
         super(Driving, self).__init__(aug_params)

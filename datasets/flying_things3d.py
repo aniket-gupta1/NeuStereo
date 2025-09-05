@@ -7,7 +7,7 @@ import pdb
 
 class FlyingThings3D(FlowDataset):
     def __init__(self, aug_params=None,
-                 root='/work/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
+                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
                  dstype='frames_cleanpass',
                  test_set=False,
                  validate_subset=False,
