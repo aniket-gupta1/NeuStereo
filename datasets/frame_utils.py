@@ -127,11 +127,57 @@ def writeFlowKITTI(filename, uv):
     uv = np.concatenate([uv, valid], axis=-1).astype(np.uint16)
     cv2.imwrite(filename, uv[..., ::-1])
 
+def read_foundation_stereo_flow(filename, scale=1000):
+    depth_uint8 = cv2.imread(filename, cv2.IMREAD_COLOR)
+    depth_uint8 = depth_uint8.astype(float)
+    # Note: cv2 loads images in BGR format, so we need to reverse the channels
+    out = depth_uint8[...,2]*255*255 + depth_uint8[...,1]*255 + depth_uint8[...,0]
+    return out/float(scale)
+
+def read_kitti_disparity(file_name):
+    """
+    Read KITTI disparity files (16-bit PNG format)
+    KITTI format: disparity values are stored as uint16 in pixels * 256
+    """
+    from PIL import Image
+    import numpy as np
+    
+    img = Image.open(file_name)
+    disp = np.array(img).astype(np.float32)
+    
+    # KITTI disparity format: pixel_value / 256.0 gives disparity in pixels
+    # But only for valid pixels (non-zero values)
+    # Invalid pixels are stored as 0
+    
+    # Create valid mask first
+    valid_mask = disp > 0
+    
+    # Apply scaling only to valid pixels
+    disp[valid_mask] = disp[valid_mask] / 256.0
+    
+    # Ensure it's 2D (height, width)
+    if len(disp.shape) == 3:
+        # If it has channels, take the first channel
+        disp = disp[:, :, 0]
+    elif len(disp.shape) > 3:
+        # Something's wrong, flatten to 2D
+        print(f"WARNING: Unexpected disparity shape {disp.shape}, reshaping")
+        disp = disp.squeeze()
+    
+    return disp
 
 def read_gen(file_name, pil=False):
     ext = splitext(file_name)[-1]
     if ext == '.png' or ext == '.jpeg' or ext == '.ppm' or ext == '.jpg':
-        return Image.open(file_name)
+        # Check if this might be a Foundation Stereo disparity file or a KITTI disparity file
+        if 'disparity' in file_name.lower():
+            # Foundation Stereo format
+            return read_foundation_stereo_flow(file_name)
+        elif ('kitti' in file_name.lower() or 'disp_occ' in file_name.lower() or 'disp_noc' in file_name.lower()) and ext == '.png':
+            return read_kitti_disparity(file_name)
+        else:
+            # Regular image
+            return Image.open(file_name)
     elif ext == '.bin' or ext == '.raw':
         return np.load(file_name)
     elif ext == '.flo':

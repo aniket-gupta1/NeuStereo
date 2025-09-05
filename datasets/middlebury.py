@@ -9,7 +9,7 @@ import pdb
 class Middlebury(FlowDataset):
     def __init__(self, aug_params=None, 
                  split="Q",
-                 root='/work/nufr/aniket/Datasets/Stereo_Disp/Middlebury',
+                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/Middlebury',
                  ):
     
         super(Middlebury, self).__init__(aug_params)

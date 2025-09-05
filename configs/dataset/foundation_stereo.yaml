@@ -1,5 +1,5 @@
 dataset:
-  path: /projects/nufr/aniket/Datasets/Stereo_Disp/ETH3D/
+  path: /projects/NEUFR/data/FSD/
   train_split: train
   val_split: val
   weight: 1
