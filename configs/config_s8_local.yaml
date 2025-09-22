@@ -1,7 +1,7 @@
 general: 
   logdir: logs/
   exp_name: test_single_mask
-  TIMEIT: false
+  TIMEIT: True
   dev: false
   skip: 1
   enable_amp: false
@@ -29,3 +29,4 @@ model:
   iter_context_dim_s8: 64
   feature_dim_s1: 128
   upsample_method: "raft"
+  max_disparity: 192

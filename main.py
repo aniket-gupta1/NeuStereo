@@ -4,8 +4,15 @@ from torch.utils.data import DataLoader
 from easydict import EasyDict
 import argparse
 import os
+# from datasets import build_dataset, MultiDataset
 from datasets import build_dataset, MultiDataset
 from NeuStereo.neustereo import NeuStereo
+# from NeuStereo_small.neustereo import NeuStereo
+# from NeuStereo_s8.neustereo import NeuStereo
+# from NeuStereo_s8_2.neustereo import NeuStereo
+# from NeuStereo_s8_local.neustereo import NeuStereo
+# from NeuFlow.neuflow import NeuFlow
+# from NeuStereo_superimp.neustereo import NeuStereo
 from trainer import Trainer
 from utils import prepare_logger, load_config
 from torch.utils.tensorboard import SummaryWriter
@@ -138,7 +145,6 @@ def load_checkpoint_flexible(model, checkpoint_path, device, force_single_gpu=Fa
     # Handle different scenarios
     if checkpoint_is_multigpu and not current_is_multigpu:
         # Multi-GPU checkpoint → Single GPU
-        print("Converting multi-GPU checkpoint to single GPU")
         new_state_dict = {}
         for key, value in state_dict.items():
             new_key = key[7:] if key.startswith('module.') else key
@@ -157,6 +163,7 @@ def load_checkpoint_flexible(model, checkpoint_path, device, force_single_gpu=Fa
     else:
         # Same format, no conversion needed
         print("Checkpoint format matches current setup")
+        pass
     
     # Load state dict
     try:
@@ -176,6 +183,7 @@ def load_checkpoint_flexible(model, checkpoint_path, device, force_single_gpu=Fa
 def setup_model(cfg, args, logger, device):
     
     model = NeuStereo(cfg).to(device)
+    # model = NeuFlow(cfg).to(device)
     if args.resume:
         model = load_checkpoint_flexible(model, args.resume, device, logger)
         logger.info(f"Loaded model from checkpoint: {args.resume}")
@@ -238,7 +246,7 @@ if __name__ == '__main__':
 
             if os.path.exists(args.config):
                 print(f"Using config file from checkpoint directory: {args.config}")
-            else:
+            elif not os.path.exists(args.config):
                 raise ValueError(f"Config file not found in checkpoint directory: {args.config}")
     
     cfg = EasyDict(load_config(args.config))

@@ -15,6 +15,7 @@ import torch.utils.benchmark as benchmark
 def count_parameters(model):
     actual_model = model.module if hasattr(model, 'module') else model
     
+
     return sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
 
 def benchmark_model_fixed(model, device):
@@ -23,6 +24,7 @@ def benchmark_model_fixed(model, device):
     for i in range(50):
         image1, image2 = torch.rand(3, 384, 512), torch.rand(3, 384, 512)
         image1 = image1[None].to(device)
+        image1 = image1[None].to(device).half()
         image2 = image2[None].to(device)
 
         padder = InputPadder(image1.shape, divis_by=16)
@@ -52,6 +54,7 @@ def benchmark_model(model, val_dataset, device):
     for val_id in range(len(val_dataset)):
         image1, image2, flow_gt, valid_gt = val_dataset[val_id]
         image1 = image1[None].to(device)
+        image1 = image1[None].to(device).half()
         image2 = image2[None].to(device)
 
         padder = InputPadder(image1.shape, divis_by=32)
@@ -95,17 +98,25 @@ def save_outputs_func(image1, image2, disp_gt, disp_pred, val_id, folder_name):
     axes[0, 1].set_title("Image 2")
     axes[0, 1].axis("off")
 
-    axes[1, 0].imshow(disp_gt_np, cmap="jet")
-    axes[1, 0].set_title("Ground Truth Disp.")
+    # GT Disparity with colorbar
+    im3 = axes[1, 0].imshow(disp_gt_np, cmap="viridis")
+    axes[1, 0].set_title(f"Ground Truth Disp. (min: {disp_gt_np.min():.2f}, max: {disp_gt_np.max():.2f})")
     axes[1, 0].axis("off")
+    cbar3 = plt.colorbar(im3, ax=axes[1, 0], fraction=0.046, pad=0.04)
+    cbar3.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
+    # Predicted Disparity with colorbar
     pred_disp = disp_pred[0].permute(1,2,0).cpu().numpy().squeeze()
-    axes[1, 1].imshow(pred_disp, cmap="jet")
-    axes[1, 1].set_title("Predicted Disp.")
+    im4 = axes[1, 1].imshow(pred_disp, cmap="viridis")
+    axes[1, 1].set_title(f"Predicted Disp. (min: {pred_disp.min():.2f}, max: {pred_disp.max():.2f})")
     axes[1, 1].axis("off")
+    cbar4 = plt.colorbar(im4, ax=axes[1, 1], fraction=0.046, pad=0.04)
+    cbar4.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
     plt.tight_layout()
     plt.savefig(f"outputs/{folder_name}/comparison_{val_id}.png")
+
+    plt.close()
 
 @torch.no_grad()
 def validate_eth3d(model, config, stage, device, mixed_prec=True, save_outputs=False):
@@ -130,13 +141,16 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True, save_outputs=F
 
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
+
+
+        flow_gt_2 = padder.pad(flow_gt.unsqueeze(0))[0]
         
         actual_model = model.module if hasattr(model, 'module') else model
         actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         # Inference
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=mixed_prec):
-            results = model(image1, image2)
+            results = model(image1, image2,  iters_s16=1, iters_s8=8, disparity_gt=flow_gt_2)
        
         flow_pr = results[-1]
         # Save the outputs
@@ -163,6 +177,7 @@ def validate_eth3d(model, config, stage, device, mixed_prec=True, save_outputs=F
     d1 = 100 * np.mean(out_list)
 
     print("Validation ETH3D: EPE %f, D1 %f" % (epe, d1))
+    # print("Validation ETH3D: EPE %f, D1 %f" % (epe, d1))
     return {'epe': epe, 'd1': d1}
 
 
@@ -218,6 +233,7 @@ def validate_kitti(model, config, stage, device, mixed_prec=True, save_outputs=F
     d1 = 100 * np.mean(d1_list)  # Convert to percentage
     
     print(f"Validation KITTI: EPE {epe}, D1 {d1}")
+    # print(f"Validation KITTI: EPE {epe}, D1 {d1}")
     return {'epe': epe, 'd1': d1}
 
 
@@ -275,6 +291,7 @@ def validate_things(model, config, stage, device, mixed_prec=True, save_outputs=
     d1 = 100 * np.mean(out_list)
 
     print("Validation FlyingThings: %f, %f" % (epe, d1))
+    # print("Validation FlyingThings: %f, %f" % (epe, d1))
     return {'epe': epe, 'd1': d1}
 
 
@@ -339,4 +356,84 @@ def validate_middlebury(model, config, stage, device, mixed_prec=True, save_outp
     d1 = 100 * np.mean(out_list)
 
     print(f"Validation Middlebury: EPE {epe}, D1 {d1}")
+    # print(f"Validation Middlebury: EPE {epe}, D1 {d1}")
     return {f'epe': epe, f'd1': d1}
+
+
+
+@torch.no_grad()
+def plot_iterations_curve(model, config, stage, device, mixed_prec=True, save_outputs=False):
+    """ Peform validation using the ETH3D (train) split """
+    model.eval()
+    val_dataset = build_dataset(config, stage, split="train")
+
+    logging.info(f"Evaluating on ETH3D. Total images: {len(val_dataset)}")
+    iters_s8_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 30, 50]
+    iters_s16_list = [1, 2, 3, 4]
+
+    # --- Lists to store results for plotting ---
+    epe_results_for_plot = []
+    d1_results_for_plot = []
+
+    for iters_s16 in iters_s16_list:
+        for iters_s8 in iters_s8_list:
+            out_list, epe_list = [], []
+
+            for val_id in range(len(val_dataset)):
+                image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
+                image1 = image1_inp.half()
+                image2 = image2_inp.half()
+
+                image1 = image1[None].to(device)
+                image2 = image2[None].to(device)
+
+                padder = InputPadder(image1.shape, divis_by=32)
+                image1, image2 = padder.pad(image1, image2)
+                
+                actual_model = model.module if hasattr(model, 'module') else model
+                actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+
+                # Inference
+                with torch.no_grad(), torch.cuda.amp.autocast(enabled=mixed_prec):
+                    results = model(image1, image2, iters_s16=iters_s16, iters_s8=iters_s8)
+            
+                flow_pr = results[-1]
+
+                flow_pr = padder.unpad(flow_pr.float()).cpu().squeeze(0)
+                assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
+                epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
+
+                epe_flattened = epe.flatten()
+                val = valid_gt.flatten() >= 0.5
+                out = (epe_flattened > 1.0)
+                image_out = out[val].float().mean().item()
+                image_epe = epe_flattened[val].mean().item()
+                epe_list.append(image_epe)
+                out_list.append(image_out)
+
+            epe_list = np.array(epe_list)
+            out_list = np.array(out_list)
+
+            epe = np.mean(epe_list)
+            d1 = 100 * np.mean(out_list)
+
+            epe_results_for_plot.append(epe)
+            d1_results_for_plot.append(d1)
+            
+            print(f"Validation ETH3D for s8: {iters_s8} and s16: {iters_s16}: EPE {epe}, D1 {d1}")
+            # print(f"Validation ETH3D for s8: {iters_s8} and s16: {iters_s16}: EPE {epe}, D1 {d1}")
+
+    # Plot the data
+    plt.figure(figsize=(10, 5))
+    plt.plot(iters_s8_list, epe_results_for_plot[::len(iters_s16_list)], marker='o', label='EPE')
+    plt.plot(iters_s8_list, d1_results_for_plot[::len(iters_s16_list)], marker='x', label='D1')
+    plt.xlabel("Number of S8 Iterations")
+    plt.ylabel("Metric Value")
+    plt.title(f"EPE and D1 vs. S8 Iterations (S16 Iterations: {iters_s16_list[0]})")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig("eth3d_iterations_plot.png")
+    # plt.show()
+
+    return {'epe': epe, 'd1': d1}
+    

@@ -2,6 +2,7 @@ logs/
 logdev/
 scripts/
 outputs/
+outputs*
 *.pth
 *.pyc
 __pycache__/

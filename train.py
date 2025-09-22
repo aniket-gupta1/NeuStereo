@@ -44,6 +44,7 @@ def get_args_parser():
 def main(args):
     # torch.autograd.set_detect_anomaly(True)
     print('Use %d GPUs' % torch.cuda.device_count())
+    # print('Use %d GPUs' % torch.cuda.device_count())
     # seed = args.seed
     # torch.manual_seed(seed)
     # np.random.seed(seed)
@@ -82,6 +83,7 @@ def main(args):
 
     num_params = sum(p.numel() for p in model.parameters())
     print('Number of params:', num_params)
+    # print('Number of params:', num_params)
 
     scaler = torch.cuda.amp.GradScaler()
     optimizer = torch.optim.AdamW(model_without_ddp.parameters(), lr=args.lr,
@@ -106,6 +108,7 @@ def main(args):
 
     train_dataset = build_train_dataset(args.stage)
     print('Number of training images:', len(train_dataset))
+    # print('Number of training images:', len(train_dataset))
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -166,6 +169,7 @@ def main(args):
                     bad_grad = True
                 if bad_grad:
                     print(name, param.grad.mean().item())
+                    # print(name, param.grad.mean().item())
                 # print(name, torch.max(torch.abs(param.grad)).item())
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -173,6 +177,7 @@ def main(args):
             scaler.step(optimizer)
 
             scaler.update()
+            # scaler.update()
 
             print(total_steps, round(metrics['epe'], 3), round(metrics['mag'], 3), optimizer.param_groups[-1]['lr'])
 

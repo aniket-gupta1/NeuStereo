@@ -69,111 +69,7 @@ class NeuStereo(torch.nn.Module):
 
         return features, torch.relu(context)
 
-    def forward_bckup(self, img0, img1, iters_s16=4, iters_s8=10):
-
-        flow_list = []
-
-        img0 /= 255.
-        img1 /= 255.
-
-        # Pass images through the backbone to generate multi-scale features
-        features_s16, features_s8 = self.backbone(torch.cat([img0, img1], dim=0))
-
-        # Apply bi-directional cross attention to condition images features on each other.
-        features_s16 = self.cross_attn_s16(features_s16)
-
-        # Split the image features into context and feature components
-        features_s16, context_s16 = self.split_features(features_s16, self.config.context_dim_s16, self.config.feature_dim_s16)
-        features_s8, context_s8 = self.split_features(features_s8, self.config.context_dim_s8, self.config.feature_dim_s8)
-
-        # Split the features into left and right image features
-        feature0_s16, feature1_s16 = features_s16.chunk(chunks=2, dim=0)
-
-        # Apply stereo correlation to get disparity / flow.
-        # start_event = torch.cuda.Event(enable_timing=True)
-        # end_event = torch.cuda.Event(enable_timing=True)
-        # start_event.record()
-        flow0 = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
-        # flow0 = self.matching_s16.global_correlation_softmax(feature0_s16, feature1_s16)
-        # flow0 = flow0[:, 0, :, :].unsqueeze(1)
-        # end_event.record()
-        # torch.cuda.synchronize()
-        # elapsed_time_ms = start_event.elapsed_time(end_event)  # Time in milliseconds
-        # print(f"Time taken for CUDA operation: {elapsed_time_ms:.3f} ms")
-
-        # flow0 = self.flow_attn_s16(feature0_s16, flow0)
-
-        # print("Features0_16: ", feature0_s16.shape)
-        # print("Features1_16: ", feature1_s16.shape)
-
-        # Initialize the correlation block
-        corr_pyr_s16 = self.corr_block_s16.init_corr_pyr(feature0_s16, feature1_s16)
-        iter_context_s16 = self.init_iter_context_s16
-
-        # Refine the flow iteratively
-        for i in range(iters_s16):
-            if self.training and i > 0:
-                flow0 = flow0.detach()
-                # iter_context_s16 = iter_context_s16.detach()
-
-            corrs = self.corr_block_s16(corr_pyr_s16, flow0)
-
-            iter_context_s16, delta_flow = self.refine_s16(corrs, context_s16, iter_context_s16, flow0)
-
-            # pdb.set_trace()
-            # delta_flow[:, 1, :, :] = 0.0
-            flow0 = flow0 + delta_flow
-
-            if self.training:
-                up_flow0 = F.interpolate(flow0, scale_factor=16, mode='bilinear') * 16
-                flow_list.append(up_flow0)
-
-        # Interpolate flow to 1/8th size.
-        flow0 = F.interpolate(flow0, scale_factor=2, mode='nearest') * 2
-
-        # Interpolate 1/16th features to 1/8th features
-        features_s16 = F.interpolate(features_s16, scale_factor=2, mode='nearest')
-
-        # Merge the interpolated 1/16th and original 1/8th features.
-        features_s8 = self.merge_s8(torch.cat([features_s8, features_s16], dim=1))
-
-        # Split the features into left and right image features
-        feature0_s8, feature1_s8 = features_s8.chunk(chunks=2, dim=0)
-
-        # Initialize the correlation block
-        corr_pyr_s8 = self.corr_block_s8.init_corr_pyr(feature0_s8, feature1_s8)
-
-        # Interpolate 1/16th context to 1/8th context
-        context_s16 = F.interpolate(context_s16, scale_factor=2, mode='nearest')
-
-        # Merge the interpolated 1/16th and original 1/8th context.
-        context_s8 = self.context_merge_s8(torch.cat([context_s8, context_s16], dim=1))
-
-        # Initialize the iterative context for 1/8th scale
-        iter_context_s8 = self.init_iter_context_s8
-
-        # Refine the flow iteratively
-        for i in range(iters_s8):
-
-            if self.training and i > 0:
-                flow0 = flow0.detach()
-                # iter_context_s8 = iter_context_s8.detach()
-
-            corrs = self.corr_block_s8(corr_pyr_s8, flow0)
-
-            iter_context_s8, delta_flow = self.refine_s8(corrs, context_s8, iter_context_s8, flow0)
-
-            flow0 = flow0 + delta_flow
-
-            if self.training or i == iters_s8 - 1:
-
-                feature0_s1 = self.conv_s8(img0)
-                up_flow0 = self.upsample_s8(feature0_s1, flow0) * 8
-                flow_list.append(up_flow0[:, :1])
-
-        return flow_list
-
-    def forward(self, img0, img1, iters_s16=1, iters_s8=8):
+    def forward(self, img0, img1, iters_s16=10, iters_s8=10):
         flow_list = []
         timing_dict = {}
         img0 /= 255.
@@ -209,6 +105,7 @@ class NeuStereo(torch.nn.Module):
             start_event.record()
         
         flow0 = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
+        print(flow0)
         if self.TIMEIT:
             end_event.record()
             torch.cuda.synchronize()

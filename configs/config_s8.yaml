@@ -1,7 +1,7 @@
 general: 
   logdir: logs/
   exp_name: test_single_mask
-  TIMEIT: false
+  TIMEIT: True
   dev: false
   skip: 1
   enable_amp: false

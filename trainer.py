@@ -74,7 +74,8 @@ class Trainer():
             actual_model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
 
             with torch.cuda.amp.autocast(enabled=True):
-                disp_preds = model(img1, img2)
+                disp_preds = model(img1, img2, iters_s16=1, iters_s8=8)
+                pdb.set_trace()
                 loss, metrics = self.loss_func(disp_preds, disp_gt, valid, self.cfg.max_disp)
             
             scaler.scale(loss).backward()

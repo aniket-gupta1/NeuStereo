@@ -7,6 +7,7 @@ from .kitti import KITTI
 from .eth3d import ETH3D
 from .middlebury import Middlebury
 from .foundation_stereo import FoundationStereo
+# from .FT3D_superimp import FlyingThings3DSuperimposed
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -49,7 +50,7 @@ def build_dataset(config, stage, split='train'):
     
     elif stage == "monkaa":
         aug_params = {'crop_size': (384, 768), 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
-        clean_dataset = Driving(aug_params, dstype='frames_cleanpass')
+        clean_dataset = Monkaa(aug_params, dstype='frames_cleanpass')
         train_dataset = clean_dataset 
     
     elif stage == "eth3d":

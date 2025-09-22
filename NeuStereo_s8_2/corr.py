@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from NeuStereo import utils
+from NeuStereo_s8_2 import utils
 
 
 def bilinear_sample(img, coords):

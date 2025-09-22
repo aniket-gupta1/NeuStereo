@@ -14,6 +14,7 @@ def setup_dataloaders():
 def main(cfg: DictConfig):
     # Print the entire config
     print(OmegaConf.to_yaml(cfg))
+    # print(OmegaConf.to_yaml(cfg))
 
     # Create necessary directories
     logdir = Path(cfg.logdir) / cfg.exp_name

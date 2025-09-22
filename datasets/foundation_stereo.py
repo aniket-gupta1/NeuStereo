@@ -52,6 +52,7 @@ class FoundationStereo(FlowDataset):
         # Try loading from cache FIRST
         if use_cache and os.path.exists(cache_file):
             print(f"Loading dataset from cache: {cache_file}")
+            # print(f"Loading dataset from cache: {cache_file}")
             try:
                 with open(cache_file, 'r') as f:
                     cached_data = json.load(f)
@@ -64,6 +65,8 @@ class FoundationStereo(FlowDataset):
                     
                     print(f"Loaded {len(self.image_list)} samples from cache")
                     print(f"Cache created: {time.ctime(cached_data.get('created_time', 0))}")
+                    # print(f"Loaded {len(self.image_list)} samples from cache")
+                    # print(f"Cache created: {time.ctime(cached_data.get('created_time', 0))}")
                     
                     # Apply validation subset if needed
                     if validate_subset:
@@ -72,9 +75,11 @@ class FoundationStereo(FlowDataset):
                     return 
                 else:
                     print("Cache parameters don't match, rebuilding...")
+                    # print("Cache parameters don't match, rebuilding...")
                     
             except Exception as e:
                 print(f"Cache loading failed: {e}. Rebuilding dataset...")
+                # print(f"Cache loading failed: {e}. Rebuilding dataset...")
         
         print("Building dataset from scratch (slow)...")
         
@@ -91,6 +96,7 @@ class FoundationStereo(FlowDataset):
             split_folders = [split_folders]
         
         print(f"Using split folders: {split_folders}")
+        # print(f"Using split folders: {split_folders}")
         
         all_left_images = []
         all_right_images = []
@@ -99,6 +105,7 @@ class FoundationStereo(FlowDataset):
         # Iterate through each split folder
         for split_folder in split_folders:
             print(f"\nProcessing split: {split_folder}")
+            # print(f"\nProcessing split: {split_folder}")
             
             # Get all scene directories for this split
             scene_pattern = osp.join(root, split_folder, '*', 'dataset', 'data')
@@ -112,8 +119,10 @@ class FoundationStereo(FlowDataset):
             if max_scenes_per_split:
                 scene_dirs = scene_dirs[:max_scenes_per_split]
                 print(f"  Limited to {len(scene_dirs)} scenes (max_scenes_per_split={max_scenes_per_split})")
+                # print(f"  Limited to {len(scene_dirs)} scenes (max_scenes_per_split={max_scenes_per_split})")
             
             print(f"  Found {len(scene_dirs)} scenes")
+            # print(f"  Found {len(scene_dirs)} scenes")
             
             split_left_images = []
             split_right_images = []
@@ -155,6 +164,7 @@ class FoundationStereo(FlowDataset):
                         split_disparity_images.append(disp_img)
             
             print(f"  Collected {len(split_left_images)} image triplets from {split_folder}")
+            # print(f"  Collected {len(split_left_images)} image triplets from {split_folder}")
             
             # Add to overall lists
             all_left_images.extend(split_left_images)
@@ -162,6 +172,7 @@ class FoundationStereo(FlowDataset):
             all_disparity_images.extend(split_disparity_images)
         
         print(f"\nTotal images collected: {len(all_left_images)} triplets from {len(split_folders)} splits")
+        # print(f"\nTotal images collected: {len(all_left_images)} triplets from {len(split_folders)} splits")
         
         if len(all_left_images) == 0:
             raise ValueError("No valid image triplets found!")
@@ -182,10 +193,12 @@ class FoundationStereo(FlowDataset):
                 self.disp_list += [disp]
         
         print(f"Final dataset: {len(self.image_list)} image pairs for {'validation' if test_set else 'training'}")
+        # print(f"Final dataset: {len(self.image_list)} image pairs for {'validation' if test_set else 'training'}")
 
         # Save cache
         if use_cache:
             print(f"Saving dataset to cache: {cache_file}")
+            # print(f"Saving dataset to cache: {cache_file}")
             cache_data = {
                 'image_list': self.image_list,
                 'disp_list': self.disp_list,
@@ -198,8 +211,10 @@ class FoundationStereo(FlowDataset):
                 with open(cache_file, 'w') as f:
                     json.dump(cache_data, f, indent=2)
                 print("Cache saved successfully!")
+                # print("Cache saved successfully!")
             except Exception as e:
                 print(f"Failed to save cache: {e}")
+                # print(f"Failed to save cache: {e}")
 
     @staticmethod
     def list_available_splits(root):
@@ -444,3 +459,4 @@ if __name__ == "__main__":
     )
 
     print(f"Foundation Stereo dataset length: {len(foundation_dataset)}")
+    # print(f"Foundation Stereo dataset length: {len(foundation_dataset)}")

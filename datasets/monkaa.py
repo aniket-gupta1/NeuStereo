@@ -7,7 +7,7 @@ import pdb
 
 class Monkaa(FlowDataset):
     def __init__(self, aug_params=None,
-                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
+                 root='/projects/nufr/aniket/Datasets/Stereo_Disp/Monkaa',
                  dstype='frames_cleanpass',
                  ):
         super(Monkaa, self).__init__(aug_params)
@@ -18,7 +18,7 @@ class Monkaa(FlowDataset):
 
         for img1, img2, disp in zip(left_images, right_images, disparity_images):
             self.image_list += [ [img1, img2] ]
-            self.disparity_list += [ disp ]
+            self.disp_list += [ disp ]
 
 
     
