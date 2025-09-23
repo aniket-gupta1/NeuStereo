@@ -5,7 +5,8 @@ from easydict import EasyDict
 import argparse
 import os
 # from datasets import build_dataset, MultiDataset
-from datasets import build_dataset, MultiDataset
+# from datasets import build_dataset, MultiDataset
+from dataloader.datasets import build_dataset
 from NeuStereo.neustereo import NeuStereo
 # from NeuStereo_small.neustereo import NeuStereo
 # from NeuStereo_s8.neustereo import NeuStereo
@@ -14,7 +15,7 @@ from NeuStereo.neustereo import NeuStereo
 # from NeuFlow.neuflow import NeuFlow
 # from NeuStereo_superimp.neustereo import NeuStereo
 from trainer import Trainer
-from utils import prepare_logger, load_config
+from utils.utils import prepare_logger, load_config
 from torch.utils.tensorboard import SummaryWriter
 
 def get_args_parser():
@@ -59,18 +60,18 @@ def get_args_parser():
 def setup_dataloaders(cfg, args, logger):
     train_dataset_list = []
    
-    train_dataset = None
-    for stage in cfg.stage:
-        config = load_config(f"configs/dataset/{stage}.yaml")
-        train_dataset_i = build_dataset(config, stage, split="train")
+    train_dataset = build_dataset(cfg)
+    # for stage in cfg.stage:
+    #     config = load_config(f"configs/dataset/{stage}.yaml")
+    #     train_dataset_i = build_dataset(stage)
 
-        if train_dataset is None:
-            train_dataset = train_dataset_i #* config['weight']
-        else:
-            train_dataset += train_dataset_i #* config['weight']
+    #     if train_dataset is None:
+    #         train_dataset = train_dataset_i
+    #     else:
+    #         train_dataset += train_dataset_i
 
-        if args.local_rank == 0:
-            logger.info(f'Number of training samples in {stage}: {len(train_dataset_i)}')
+    #     if args.local_rank == 0:
+    #         logger.info(f'Number of training samples in {stage}: {len(train_dataset_i)}')
 
     if args.local_rank == 0:
         logger.info(f"Total training samples: {len(train_dataset)}")
@@ -254,12 +255,13 @@ if __name__ == '__main__':
     # Store different datasets to its own subdirectory
     # In case of training on multiple datasets, join their names with '_' and make a new directory
     # cfg.dataset is a list of dataset names
-    logdir_name = ""
-    if len(cfg.stage) == 1:
-        logdir_name = cfg.stage[0]
-    else:
-        for dataset_name in cfg.stage:
-            logdir_name += dataset_name + "_"
+    # logdir_name = ""
+    # if len(cfg.stage) == 1:
+    #     logdir_name = cfg.stage[0]
+    # else:
+    #     for dataset_name in cfg.stage:
+    #         logdir_name += dataset_name + "_"
+    logdir_name = cfg.stage
     
     if args.dev:
         cfg.logdir = "logdev/"

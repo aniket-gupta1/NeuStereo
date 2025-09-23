@@ -105,7 +105,7 @@ class NeuStereo(torch.nn.Module):
             start_event.record()
         
         flow0 = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
-        print(flow0)
+        # print(flow0)
         if self.TIMEIT:
             end_event.record()
             torch.cuda.synchronize()

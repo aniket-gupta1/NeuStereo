@@ -1,8 +1,9 @@
 import torch
 from evaluate_stereo import *
-from utils import load_config
+from utils.utils import load_config
 import os
 import pdb
+import torch.nn.functional as F
 
 class Trainer():
     def __init__(self, cfg, args, logger, device, tensorboard_writer) -> None:
@@ -30,32 +31,36 @@ class Trainer():
 
         torch.save(checkpoint, self.cfg.logdir + f"/checkpoints/epoch_{epoch_num}.pth")
 
-    def loss_func(self, disp_preds, disp_gt, valid, max_disp=400, gamma=0.9):
-        n_predictions = len(disp_preds)
-        disp_loss = 0.0
+    def loss_func(self, pred_disps, gt_disp, mask, max_disp=400, gamma=0.9):
+        # Compute Loss
+        loss_weights = [0.9 ** (len(pred_disps) - 1 - power) for power in
+                            range(len(pred_disps))]
+        disp_loss = 0
+        
+        for k in range(len(pred_disps)):
+            pred_disp = pred_disps[k]
+            weight = loss_weights[k]
 
-        # exlude invalid pixels and extremely large diplacements
-        mag = torch.sum(disp_gt ** 2, dim=1).sqrt()  # [B, H, W]
-        valid = (valid >= 0.5) & (mag < max_disp)
+            curr_loss = F.smooth_l1_loss(pred_disp[mask], gt_disp[mask],
+                                            reduction='mean')
+            disp_loss += weight * curr_loss
 
-        for i in range(n_predictions):
-            i_weight = gamma**(n_predictions - i - 1)
-            i_loss = (disp_preds[i] - disp_gt).abs()
-            disp_loss += i_weight * (valid[:, None] * i_loss).mean()
+        total_loss = disp_loss
 
-        epe = torch.sum((disp_preds[-1] - disp_gt) ** 2, dim=1).sqrt()
+        # Compute Metrics
+        # EPE 
+        epe = F.l1_loss(gt_disp[mask], pred_disp[mask], reduction='mean')
 
-        if valid.max() < 0.5:
-            pass
+        # D1 score
+        pred_disp = pred_disps[-1]       
+        pred_disp, gt_disp = pred_disp[mask], gt_disp[mask]
+        e = torch.abs(gt_disp - pred_disp)
+        err_mask = (e > 3) & (e / gt_disp > 0.05)
+        d1 = torch.mean(err_mask.float())
 
-        epe = epe.view(-1)[valid.view(-1)]
+        metrics = {'epe': epe, 'd1': d1}
 
-        metrics = {
-            'epe': epe.mean().item(),
-            'mag': mag.mean().item()
-        }
-
-        return disp_loss, metrics
+        return total_loss, metrics 
 
     def train(self, model, train_loader, optimizer, scaler, epoch_num):
         # Step 1: Set the model to train mode
@@ -63,45 +68,35 @@ class Trainer():
 
         # Step 2: Iterate over the training loader
         for i, sample in enumerate(train_loader):
-            optimizer.zero_grad()
-
-            img1, img2, disp_gt, valid = [x.to(self.device) for x in sample]
+            img1, img2, disp_gt = [sample[x].to(self.device) for x in sample]
+            disp_gt = disp_gt.unsqueeze(1)
+            valid = (disp_gt > 0) & (disp_gt < self.cfg.max_disp)
+            if not valid.any():
+                continue
 
             img1 = img1.half()
             img2 = img2.half()
-
             actual_model = self.get_model(model)
             actual_model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
-
-            with torch.cuda.amp.autocast(enabled=True):
+            
+            optimizer.zero_grad()
+            with torch.amp.autocast("cuda", enabled=True):
                 disp_preds = model(img1, img2, iters_s16=1, iters_s8=8)
-                pdb.set_trace()
                 loss, metrics = self.loss_func(disp_preds, disp_gt, valid, self.cfg.max_disp)
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-
-            # # pdb.set_trace()
-            # bad_grad = False
-            # for name, param in model.named_parameters():
-            #     # print(param.grad)
-            #     if not torch.all(torch.isfinite(param.grad)):
-            #         bad_grad = True
-            #     if bad_grad:
-            #         print(name, param.grad.mean().item())
-
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
             scaler.step(optimizer)
             scaler.update()
 
             if self.args.local_rank == 0:
-                self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {round(metrics['epe'], 3)}, Mag: {round(metrics['mag'], 3)}, LR: {optimizer.param_groups[-1]['lr']}")
+                self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {metrics['epe']:4f}, D1: {metrics['d1']:4f}, LR: {optimizer.param_groups[-1]['lr']}")
                 
                 # Add the loss, epe, mag and learning rate to tensorboard
                 self.tensorboard_writer.add_scalar('Train/Loss', loss.item(), epoch_num * len(train_loader) + i)
                 self.tensorboard_writer.add_scalar('Train/EPE', metrics['epe'], epoch_num * len(train_loader) + i)
-                self.tensorboard_writer.add_scalar('Train/Mag', metrics['mag'], epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/D1', metrics['d1'], epoch_num * len(train_loader) + i)
                 self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + i)
 
     def val(self, model, epoch_num=1):
@@ -110,28 +105,28 @@ class Trainer():
             dataset_config = load_config(f"configs/dataset/{stage}.yaml")
 
             if stage=="flyingthings":
-                results = validate_things(model, config=dataset_config, stage=stage, device=self.device)
+                results = validate_things(model, device=self.device)
                 if self.args.local_rank == 0:
                     self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="kitti":
-                results = validate_kitti(model, config=dataset_config, stage=stage, device=self.device, save_outputs=True)
+                results = validate_kitti(model, device=self.device, save_outputs=False)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="eth3d":
-                results = validate_eth3d(model, config=dataset_config, stage=stage, device=self.device, save_outputs=True)
+                results = validate_eth3d(model, device=self.device, save_outputs=True)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
 
             if stage=="middlebury":
-                results = validate_middlebury(model, config=dataset_config, stage=stage, device=self.device, save_outputs=True)
+                results = validate_middlebury(model, device=self.device, save_outputs=True)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
