@@ -8,6 +8,7 @@ from typing import Dict, Any
 from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3)
 from dataloader import transforms
 from utils.utils import InputPadder
+from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import pdb
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
@@ -77,8 +78,11 @@ def save_outputs_func(
     img2_np = image2.permute(1, 2, 0).numpy()
     disp_gt_np = disp_gt.cpu().numpy()
     pred_disp_np = disp_pred.cpu().numpy()
+    
+    # Make the valid mask
+    valid_gt_mask = disp_gt_np > 0
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))  # Create a 2x2 grid
+    fig, axes = plt.subplots(3, 2, figsize=(12, 15))  # Create a 2x2 grid
    
     # Display images
     axes[0, 0].imshow(img1_np)
@@ -98,52 +102,43 @@ def save_outputs_func(
     cbar4 = plt.colorbar(im4, ax=axes[1, 1], fraction=0.046, pad=0.04)
     cbar4.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
-    for ax in axes.flat:
-        ax.axis("off")
+    # Error map with colorbar
+    # Calculate error
+    error_map = np.abs(pred_disp_np - disp_gt_np)
+    error_map = np.where(valid_gt_mask, error_map, np.nan)
+    valid_errors = error_map[valid_gt_mask]
+    mean_error = valid_errors.mean() if valid_errors.size > 0 else 0
+    max_error = valid_errors.max() if valid_errors.size > 0 else 0
+
+    im5 = axes[2, 0].imshow(error_map, cmap="hot")
+    axes[2, 0].set_title(f"Absolute Error (mean: {mean_error:.2f}, max: {max_error:.2f})")
+    cbar5 = plt.colorbar(im5, ax=axes[2, 0], fraction=0.046, pad=0.04)
+    cbar5.set_label('Error (pixels)', rotation=270, labelpad=15)
+
+    # Error histogram
+    axes[2, 1].hist(valid_errors.flatten(), bins=50, edgecolor='black')
+    axes[2, 1].set_xlabel('Absolute Error (pixels)')
+    axes[2, 1].set_ylabel('Pixel Count')
+    axes[2, 1].set_title(f'Error Distribution (EPE: {error_map.mean():.3f})')
+    axes[2, 1].grid(True, alpha=0.3)
+
+    # Add percentage of pixels below certain thresholds
+    total_pixels = valid_gt_mask.sum()
+    pct_1px = (valid_errors < 1.0).sum() / total_pixels * 100 if total_pixels > 0 else 0
+    pct_3px = (valid_errors < 3.0).sum() / total_pixels * 100 if total_pixels > 0 else 0
+    axes[2, 1].axvline(x=1.0, color='r', linestyle='--', alpha=0.5, label=f'<1px: {pct_1px:.1f}%')
+    axes[2, 1].axvline(x=3.0, color='g', linestyle='--', alpha=0.5, label=f'<3px: {pct_3px:.1f}%')
+    axes[2, 1].legend()
+
+    for i, ax in enumerate(axes.flat):
+        if i != 5:  # Keep axis on for histogram
+            ax.axis("off")
 
     plt.tight_layout()
     plt.savefig(f"outputs/{folder_name}/comparison_{val_id}.png")
     plt.close()
 
-def d1_metric(d_est, d_gt, mask, use_np=False):
-    d_est, d_gt = d_est[mask], d_gt[mask]
-    if use_np:
-        e = np.abs(d_gt - d_est)
-    else:
-        e = torch.abs(d_gt - d_est)
-    err_mask = (e > 3) & (e / d_gt > 0.05)
 
-    if use_np:
-        mean = np.mean(err_mask.astype('float'))
-    else:
-        mean = torch.mean(err_mask.float())
-
-    return mean
-
-def thres_metric(d_est, d_gt, mask, thres, use_np=False):
-    assert isinstance(thres, (int, float))
-    d_est, d_gt = d_est[mask], d_gt[mask]
-    if use_np:
-        e = np.abs(d_gt - d_est)
-    else:
-        e = torch.abs(d_gt - d_est)
-    err_mask = e > thres
-
-    if use_np:
-        mean = np.mean(err_mask.astype('float'))
-    else:
-        mean = torch.mean(err_mask.float())
-
-    return mean
-
-def epe_metric(d_est, d_gt, mask, use_np=False):
-    d_est, d_gt = d_est[mask], d_gt[mask]
-    if use_np:
-        epe = np.mean(np.abs(d_est - d_gt))
-    else:
-        epe = torch.mean(torch.abs(d_est - d_gt))
-
-    return epe
 
 # --- Dataset Configuration ---
 # Centralized configuration for each dataset to keep the main function generic.
@@ -214,7 +209,7 @@ def validate_dataset(
 
     for val_id in tqdm(range(len(val_dataset)), desc=f"Validating on {dataset_name.upper()}"):
         data = val_dataset[val_id]
-        image1_inp, image2_inp, disp_gt = data['left'], data['right'], data['disp']        
+        image1_inp, image2_inp, disp_gt = data['left'], data['right'], data['disp']
         
         # Make the valid mask
         valid_gt = disp_gt > 0
@@ -258,7 +253,7 @@ def validate_dataset(
     mean_d1 = val_d1 / valid_samples
     mean_thres = val_thres / valid_samples
 
-    print(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
+    # print(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
     return {'epe': mean_epe, 'd1': mean_d1, 'thresh': mean_thres}
 
 # --- Simplified Validation Functions (API) ---

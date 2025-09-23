@@ -1,6 +1,7 @@
 import torch
 from evaluate_stereo import *
 from utils.utils import load_config
+from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import os
 import pdb
 import torch.nn.functional as F
@@ -41,24 +42,26 @@ class Trainer():
             pred_disp = pred_disps[k]
             weight = loss_weights[k]
 
-            curr_loss = F.smooth_l1_loss(pred_disp[mask], gt_disp[mask],
-                                            reduction='mean')
+            curr_loss = F.smooth_l1_loss(pred_disp[mask], gt_disp[mask], reduction='mean')
             disp_loss += weight * curr_loss
 
         total_loss = disp_loss
 
         # Compute Metrics
-        # EPE 
-        epe = F.l1_loss(gt_disp[mask], pred_disp[mask], reduction='mean')
+        pred_disp = pred_disps[-1]
+        epe = epe_metric(pred_disp, gt_disp, mask)
+        d1 = d1_metric(pred_disp, gt_disp, mask)
+        thresh_1px = thres_metric(pred_disp, gt_disp, mask, thres=1)
+        thresh_2px = thres_metric(pred_disp, gt_disp, mask, thres=2)
+        thresh_3px = thres_metric(pred_disp, gt_disp, mask, thres=3)
 
-        # D1 score
-        pred_disp = pred_disps[-1]       
-        pred_disp, gt_disp = pred_disp[mask], gt_disp[mask]
-        e = torch.abs(gt_disp - pred_disp)
-        err_mask = (e > 3) & (e / gt_disp > 0.05)
-        d1 = torch.mean(err_mask.float())
-
-        metrics = {'epe': epe, 'd1': d1}
+        metrics = {
+            'epe': epe, 
+            'd1': d1,
+            '1px_error:': thresh_1px,
+            '2px_error:': thresh_2px,
+            '3px_error:': thresh_3px,
+        }
 
         return total_loss, metrics 
 
@@ -91,12 +94,15 @@ class Trainer():
             scaler.update()
 
             if self.args.local_rank == 0:
-                self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {metrics['epe']:4f}, D1: {metrics['d1']:4f}, LR: {optimizer.param_groups[-1]['lr']}")
+                self.logger.info(f"Epoch: {epoch_num}, Step: {i}, EPE: {metrics['epe']:3f}, D1: {metrics['d1']:3f}, 1px error: {metrics['1px_error']:3f}, 2px error: {metrics['2px_error']:3f}, 3px error: {metrics['3px_error']:3f}")
                 
                 # Add the loss, epe, mag and learning rate to tensorboard
                 self.tensorboard_writer.add_scalar('Train/Loss', loss.item(), epoch_num * len(train_loader) + i)
                 self.tensorboard_writer.add_scalar('Train/EPE', metrics['epe'], epoch_num * len(train_loader) + i)
                 self.tensorboard_writer.add_scalar('Train/D1', metrics['d1'], epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/1px_error', metrics['1px_error'], epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/2px_error', metrics['2px_error'], epoch_num * len(train_loader) + i)
+                self.tensorboard_writer.add_scalar('Train/3px_error', metrics['3px_error'], epoch_num * len(train_loader) + i)
                 self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + i)
 
     def val(self, model, epoch_num=1):
@@ -107,30 +113,34 @@ class Trainer():
             if stage=="flyingthings":
                 results = validate_things(model, device=self.device)
                 if self.args.local_rank == 0:
-                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.logger.info(f"For {stage}: EPE: {results['epe']:3f} || d1: {results['d1']:3f} || 1px error: {results['thresh']:3f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="kitti":
                 results = validate_kitti(model, device=self.device, save_outputs=False)
                 if self.args.local_rank == 0:    
-                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.logger.info(f"For {stage}: EPE: {results['epe']:3f} || d1: {results['d1']:3f} || 3px error: {results['thresh']:3f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-3px_error', results['thresh'], epoch_num)
 
             if stage=="eth3d":
                 results = validate_eth3d(model, device=self.device, save_outputs=True)
                 if self.args.local_rank == 0:    
-                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.logger.info(f"For {stage}: EPE: {results['epe']:3f} || d1: {results['d1']:3f} || 1px error: {results['thresh']:3f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="middlebury":
                 results = validate_middlebury(model, device=self.device, save_outputs=True)
                 if self.args.local_rank == 0:    
-                    self.logger.info(f"For {stage}: EPE: {results['epe']} || d1: {results['d1']}")
+                    self.logger.info(f"For {stage}: EPE: {results['epe']:3f} || d1: {results['d1']:3f} || 2px error: {results['thresh']:3f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
+                    self.tensorboard_writer.add_scalar(f'Val/{stage}-2px_error', results['thresh'], epoch_num)
 
     def fit(self, model, train_loader, train_sampler):
         # Step 1: Configure the optimizer, mixed precision, learning rate scheduler
