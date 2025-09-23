@@ -92,7 +92,7 @@ class StereoDataset(Dataset):
 
 class FlyingThings3D(StereoDataset):
     def __init__(self,
-                 data_dir='datasets/FlyingThings3D',
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
                  mode='TRAIN',
                  split='frames_finalpass',
                  transform=None,
@@ -101,7 +101,7 @@ class FlyingThings3D(StereoDataset):
                                              )
 
         # samples: train: 22390, test: 4370
-        left_files = sorted(glob(data_dir + '/' + split + '/' + mode + '/*/*/left/*.png'))
+        left_files = sorted(glob(data_dir + '/' + split + '/' + mode + '/*/*/left/*.npy'))
 
         for left_name in left_files:
             sample = dict()
@@ -115,7 +115,7 @@ class FlyingThings3D(StereoDataset):
 
 class Monkaa(StereoDataset):
     def __init__(self,
-                 data_dir='datasets/Monkaa',
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Monkaa',
                  split='frames_finalpass',
                  transform=None,
                  ):
@@ -136,7 +136,7 @@ class Monkaa(StereoDataset):
 
 class Driving(StereoDataset):
     def __init__(self,
-                 data_dir='datasets/Driving',
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Driving',
                  split='frames_finalpass',
                  transform=None,
                  ):
@@ -157,7 +157,7 @@ class Driving(StereoDataset):
 
 class KITTI15(StereoDataset):
     def __init__(self,
-                 data_dir='datasets/KITTI/stereo/kitti_2015',
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/KITTI/',
                  mode='training',
                  transform=None,
                  save_filename=False,
@@ -305,7 +305,7 @@ class SintelStereo(StereoDataset):
 
 class ETH3DStereo(StereoDataset):
     def __init__(self,
-                 data_dir='datasets/ETH3D',
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/ETH3D',
                  mode='train',
                  transform=None,
                  save_filename=False,
@@ -346,7 +346,7 @@ class ETH3DStereo(StereoDataset):
 
 class MiddleburyEval3(StereoDataset):
     def __init__(self,
-                 data_dir='datasets/Middlebury/MiddEval3',
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Middlebury/MiddEval3',
                  mode='training',
                  resolution='H',
                  transform=None,
@@ -635,8 +635,8 @@ class FallingThings(StereoDataset):
 
 def build_dataset(args):
     if args.stage == 'sceneflow':
-        train_transform_list = [transforms.RandomScale(crop_width=args.img_width),
-                                transforms.RandomCrop(args.img_height, args.img_width),
+        train_transform_list = [transforms.RandomScale(crop_width=768),
+                                transforms.RandomCrop(384, 768),
                                 transforms.RandomColor(),
                                 transforms.RandomVerticalFlip(),
                                 transforms.ToTensor(),

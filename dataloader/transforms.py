@@ -62,6 +62,29 @@ class Normalize(object):
 
         return sample
 
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, sample):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Unnormalized image.
+        """
+        norm_keys = ['left', 'right']
+
+        for key in norm_keys:
+            # Check if the key exists in the sample
+            if key in sample:
+                # Iterate over the tensor, mean, and std channels
+                for t, m, s in zip(sample[key], self.mean, self.std):
+                    # The reverse operation is to multiply by std and then add the mean
+                    t.mul_(s).add_(m)
+        
+        return sample
 
 class RandomCrop(object):
     def __init__(self, img_height, img_width):
