@@ -1,24 +1,28 @@
-import sys
 import os
-import argparse
-import time
 import logging
 import numpy as np
 import torch
 from tqdm import tqdm
-from datasets import build_dataset
-from utils import InputPadder
+from typing import Dict, Any
+# from datasets import build_dataset
+from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3)
+from dataloader import transforms
+from utils.utils import InputPadder
 import pdb
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 import torch.utils.benchmark as benchmark
 
+# --- Constants ---
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+# --- Helper Functions ---
 def count_parameters(model):
     actual_model = model.module if hasattr(model, 'module') else model
-    
-
     return sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
 
-def benchmark_model_fixed(model, device):
+def benchmark_model(model, device):
     elapsed_list = []
     print("Working on image size: (512, 384)")
     for i in range(50):
@@ -49,391 +53,228 @@ def benchmark_model_fixed(model, device):
 
     return np.mean(elapsed_list)
 
-def benchmark_model(model, val_dataset, device):
-    elapsed_list = []
-    for val_id in range(len(val_dataset)):
-        image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1[None].to(device)
-        image1 = image1[None].to(device).half()
-        image2 = image2[None].to(device)
+def unnormalize_image(image):
+    # Check that the image has 3 dimensions and the shape - C, H, W
+    assert image.ndim==3 and image.shape[0]==3, (image.shape, image.ndim)
+    for t, m, s in zip(image, IMAGENET_MEAN, IMAGENET_STD):
+        # The reverse operation is to multiply by std and then add the mean
+        t.mul_(s).add_(m)
+    return image
 
-        padder = InputPadder(image1.shape, divis_by=32)
-        image1, image2 = padder.pad(image1, image2)
-        
-        actual_model = model.module if hasattr(model, 'module') else model
-        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+def save_outputs_func(
+    image1: torch.Tensor, image2: torch.Tensor, disp_gt: torch.Tensor, 
+    disp_pred: torch.Tensor, val_id: int, folder_name: str
+):
+    """Saves visual comparison of ground truth and predicted disparity."""
 
-        # Benchmark using torch.utils.benchmark
-        timer = benchmark.Timer(
-            stmt=""" 
-            with torch.no_grad(), torch.cuda.amp.autocast(enabled=True):  
-                results = model(image1, image2)
-            """,
-            globals={"model": model, "image1": image1, "image2": image2},
-            num_threads=torch.get_num_threads(),
-        )
-
-        # Run timing (N=10 gives better stability)
-        time_taken = timer.timeit(1).mean * 1000  # Convert to milliseconds
-        elapsed_list.append(time_taken)
-
-    return np.mean(elapsed_list)
-
-def save_outputs_func(image1, image2, disp_gt, disp_pred, val_id, folder_name):
     # Make the output folder
     os.makedirs(f"outputs/{folder_name}", exist_ok=True)
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))  # Create a 2x2 grid
     # Convert tensors to NumPy and normalize if needed
-    img1_np = image1.permute(1, 2, 0).numpy() / 255.0
-    img2_np = image2.permute(1, 2, 0).numpy() / 255.0
-    disp_gt_np = disp_gt.permute(1, 2, 0).numpy().squeeze()
+    image1 = unnormalize_image(image1)
+    image2 = unnormalize_image(image2)
+    img1_np = image1.permute(1, 2, 0).numpy()
+    img2_np = image2.permute(1, 2, 0).numpy()
+    disp_gt_np = disp_gt.cpu().numpy()
+    pred_disp_np = disp_pred.cpu().numpy()
 
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10))  # Create a 2x2 grid
+   
     # Display images
     axes[0, 0].imshow(img1_np)
-    axes[0, 0].set_title("Image 1")
-    axes[0, 0].axis("off")
-
+    axes[0, 0].set_title("Left Image")
     axes[0, 1].imshow(img2_np)
-    axes[0, 1].set_title("Image 2")
-    axes[0, 1].axis("off")
+    axes[0, 1].set_title("Right Image")
 
     # GT Disparity with colorbar
     im3 = axes[1, 0].imshow(disp_gt_np, cmap="viridis")
     axes[1, 0].set_title(f"Ground Truth Disp. (min: {disp_gt_np.min():.2f}, max: {disp_gt_np.max():.2f})")
-    axes[1, 0].axis("off")
     cbar3 = plt.colorbar(im3, ax=axes[1, 0], fraction=0.046, pad=0.04)
     cbar3.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
     # Predicted Disparity with colorbar
-    pred_disp = disp_pred[0].permute(1,2,0).cpu().numpy().squeeze()
-    im4 = axes[1, 1].imshow(pred_disp, cmap="viridis")
-    axes[1, 1].set_title(f"Predicted Disp. (min: {pred_disp.min():.2f}, max: {pred_disp.max():.2f})")
-    axes[1, 1].axis("off")
+    im4 = axes[1, 1].imshow(pred_disp_np, cmap="viridis")
+    axes[1, 1].set_title(f"Predicted Disp. (min: {pred_disp_np.min():.2f}, max: {pred_disp_np.max():.2f})")
     cbar4 = plt.colorbar(im4, ax=axes[1, 1], fraction=0.046, pad=0.04)
     cbar4.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
+    for ax in axes.flat:
+        ax.axis("off")
+
     plt.tight_layout()
     plt.savefig(f"outputs/{folder_name}/comparison_{val_id}.png")
-
     plt.close()
 
+def d1_metric(d_est, d_gt, mask, use_np=False):
+    d_est, d_gt = d_est[mask], d_gt[mask]
+    if use_np:
+        e = np.abs(d_gt - d_est)
+    else:
+        e = torch.abs(d_gt - d_est)
+    err_mask = (e > 3) & (e / d_gt > 0.05)
+
+    if use_np:
+        mean = np.mean(err_mask.astype('float'))
+    else:
+        mean = torch.mean(err_mask.float())
+
+    return mean
+
+def thres_metric(d_est, d_gt, mask, thres, use_np=False):
+    assert isinstance(thres, (int, float))
+    d_est, d_gt = d_est[mask], d_gt[mask]
+    if use_np:
+        e = np.abs(d_gt - d_est)
+    else:
+        e = torch.abs(d_gt - d_est)
+    err_mask = e > thres
+
+    if use_np:
+        mean = np.mean(err_mask.astype('float'))
+    else:
+        mean = torch.mean(err_mask.float())
+
+    return mean
+
+def epe_metric(d_est, d_gt, mask, use_np=False):
+    d_est, d_gt = d_est[mask], d_gt[mask]
+    if use_np:
+        epe = np.mean(np.abs(d_est - d_gt))
+    else:
+        epe = torch.mean(torch.abs(d_est - d_gt))
+
+    return epe
+
+# --- Dataset Configuration ---
+# Centralized configuration for each dataset to keep the main function generic.
+DATASET_CONFIGS = {
+    'eth3d': {
+        'class': ETH3DStereo,
+        'args': {},
+        'epe_threshold': 1.0,
+    },
+    'kitti': {
+        'class': KITTI15,
+        'args': {'mode': 'training'},
+        'epe_threshold': 3.0,
+    },
+    'middlebury': {
+        'class': MiddleburyEval3,
+        'args': {'resolution': 'Q'},
+        'epe_threshold': 2.0,
+    },
+    'things': {
+        'class': FlyingThings3D,
+        'args': {'split': 'val'},
+        'epe_threshold': 1.0,
+        # Special filter for FlyingThings3D as per the original code
+        'filter_fn': lambda disp: disp.abs() < 192
+    },
+}
+
 @torch.no_grad()
-def validate_eth3d(model, config, stage, device, mixed_prec=True, save_outputs=False):
-    """ Peform validation using the ETH3D (train) split """
+def validate_dataset(
+    model: torch.nn.Module,
+    dataset_name: str,
+    device: str, 
+    mixed_prec: bool = True, 
+    save_outputs: bool = False,
+    **model_kwargs: Any,
+    ):
+    """
+    Performs validation on a specified dataset using a generic, config-driven approach.
+
+    Args:
+        model: The PyTorch model to evaluate.
+        dataset_name: The name of the dataset (e.g., 'kitti', 'eth3d').
+        device: The device to run evaluation on ('cuda' or 'cpu').
+        mixed_prec: Whether to use automatic mixed precision.
+        save_outputs: Whether to save visualization images.
+        **model_kwargs: Additional keyword arguments for the model's forward pass (e.g., iters_s8).
+
+    Returns:
+        A dictionary containing the calculated metrics (EPE and D1).
+    """
+    # Put the model in evaluation mode
     model.eval()
-    val_dataset = build_dataset(config, stage, split="train")
+    
+    # Build validation dataset
+    config = DATASET_CONFIGS[dataset_name]
+    val_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    ])
+    dataset_args = config.get('args', {})
+    dataset_args['transform'] = val_transform
+    val_dataset = config['class'](**dataset_args)
 
-    logging.info(f"Evaluating on ETH3D. Total images: {len(val_dataset)}")
-    out_list, epe_list = [], []
+    # Assign constants and log
+    logging.info(f"Evaluating on {dataset_name.upper()}. Total images: {len(val_dataset)}")
+    val_epe, val_d1, val_thres, valid_samples = 0, 0, 0, 0
 
-    # Benchmark the model for speed
-    # elapsed_time = benchmark_model(model, val_dataset, device)
-    # print(f"Elapsed time: {elapsed_time} ms")
+    for val_id in tqdm(range(len(val_dataset)), desc=f"Validating on {dataset_name.upper()}"):
+        data = val_dataset[val_id]
+        image1_inp, image2_inp, disp_gt = data['left'], data['right'], data['disp']        
+        
+        # Make the valid mask
+        valid_gt = disp_gt > 0
+        if not valid_gt.any():
+            continue
 
-    for val_id in range(len(val_dataset)):
-        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
+        # Convert inputs to half precision and pad the images. 
         image1 = image1_inp.half()
         image2 = image2_inp.half()
-
         image1 = image1[None].to(device)
         image2 = image2[None].to(device)
-
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
 
-
-        flow_gt_2 = padder.pad(flow_gt.unsqueeze(0))[0]
-        
-        actual_model = model.module if hasattr(model, 'module') else model
-        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+        # Intialize model parameters
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
         # Inference
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=mixed_prec):
-            results = model(image1, image2,  iters_s16=1, iters_s8=8, disparity_gt=flow_gt_2)
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=mixed_prec):
+            results = model(image1, image2, **model_kwargs)
        
-        flow_pr = results[-1]
-        # Save the outputs
-        if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'eth3d')
-
-        flow_pr = padder.unpad(flow_pr.float()).cpu().squeeze(0)
-        assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
-        epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-
-        epe_flattened = epe.flatten()
-        val = valid_gt.flatten() >= 0.5
-        out = (epe_flattened > 1.0)
-        image_out = out[val].float().mean().item()
-        image_epe = epe_flattened[val].mean().item()
-        # logging.info(f"ETH3D {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
-        epe_list.append(image_epe)
-        out_list.append(image_out)
-
-    epe_list = np.array(epe_list)
-    out_list = np.array(out_list)
-
-    epe = np.mean(epe_list)
-    d1 = 100 * np.mean(out_list)
-
-    print("Validation ETH3D: EPE %f, D1 %f" % (epe, d1))
-    # print("Validation ETH3D: EPE %f, D1 %f" % (epe, d1))
-    return {'epe': epe, 'd1': d1}
-
-
-@torch.no_grad()
-def validate_kitti(model, config, stage, device, mixed_prec=True, save_outputs=False):
-    """ Peform validation using the KITTI-2015 (train) split """
-    model.eval()
-    val_dataset = build_dataset(config, stage, split="train")
-    torch.backends.cudnn.benchmark = True
-    logging.info(f"Evaluating on KITTI. Total images: {len(val_dataset)}")
-    
-    # Store individual metrics instead of arrays
-    epe_list = []
-    d1_list = []  # Store D1 percentages instead of boolean arrays
-    
-    for val_id in range(len(val_dataset)):
-        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1_inp.half()
-        image2 = image2_inp.half()
-        image1 = image1[None].to(device)
-        image2 = image2[None].to(device)
-        padder = InputPadder(image1.shape, divis_by=32)
-        image1, image2 = padder.pad(image1, image2)
-        
-        actual_model = model.module if hasattr(model, 'module') else model
-        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
-        
-        with torch.cuda.amp.autocast(enabled=mixed_prec):
-            results = model(image1, image2)
-            flow_pr = results[-1]
-            
-        if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'KITTI')
-            
-        flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
-        assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
-        
-        epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-        epe_flattened = epe.flatten()
-        val = valid_gt.flatten() >= 0.5
-        out = (epe_flattened > 3.0)
-        
-        # Calculate metrics per image
-        image_d1 = out[val].float().mean().item()  # D1 percentage for this image
-        image_epe = epe_flattened[val].mean().item()  # EPE for this image
-        
-        # Store individual metrics
-        epe_list.append(image_epe)
-        d1_list.append(image_d1)
-    
-    # Calculate overall metrics
-    epe = np.mean(epe_list)
-    d1 = 100 * np.mean(d1_list)  # Convert to percentage
-    
-    print(f"Validation KITTI: EPE {epe}, D1 {d1}")
-    # print(f"Validation KITTI: EPE {epe}, D1 {d1}")
-    return {'epe': epe, 'd1': d1}
-
-
-@torch.no_grad()
-def validate_things(model, config, stage, device, mixed_prec=True, save_outputs=False):
-    """ Peform validation using the FlyingThings3D (TEST) split """
-    model.eval()
-    val_dataset = build_dataset(config, stage, split="val")
-
-    logging.info(f"Evaluating on FlyingThings3D. Total images: {len(val_dataset)}")
-
-    out_list, epe_list = [], []
-    for val_id in tqdm(range(len(val_dataset))):
-        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1_inp.half()
-        image2 = image2_inp.half()
-
-        image1 = image1[None].to(device)
-        image2 = image2[None].to(device)
-
-        padder = InputPadder(image1.shape, divis_by=32)
-        image1, image2 = padder.pad(image1, image2)
-
-        actual_model = model.module if hasattr(model, 'module') else model
-        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
-
-        with torch.cuda.amp.autocast(enabled=mixed_prec):
-            results = model(image1, image2)
-        
-        flow_pr = results[-1]
+        disp_pred = results[-1] # Shape [1, H, W]
+        disp_pred = padder.unpad(disp_pred)[0].squeeze(0).cpu() # Shape [H, W]
+        assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
 
         # Save the outputs
         if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'flyingthings')
+            save_outputs_func(image1_inp, image2_inp, disp_gt, disp_pred, val_id, dataset_name)
 
-        flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
-        assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
-        epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-
-        epe = epe.flatten()
-        val = (valid_gt.flatten() >= 0.5) & (flow_gt.abs().flatten() < 192)
-
-        out = (epe > 1.0)
-
-        if np.isnan(epe[val].mean().item()): #TODO: Fix this part
-            continue
+        # Compute Metrics
+        epe = F.l1_loss(disp_gt[valid_gt], disp_pred[valid_gt], reduction='mean')
+        d1 = d1_metric(disp_pred, disp_gt, valid_gt)
+        thres = thres_metric(disp_pred, disp_gt, valid_gt, config['epe_threshold'])
         
-        epe_list.append(epe[val].mean().item())
-        out_list.append(out[val].cpu().numpy())
+        valid_samples += 1
+        val_epe += epe.item()
+        val_d1 += d1.item()
+        val_thres += thres.item()
 
-    epe_list = np.array(epe_list)
-    out_list = np.concatenate(out_list)
+    mean_epe = val_epe / valid_samples
+    mean_d1 = val_d1 / valid_samples
+    mean_thres = val_thres / valid_samples
 
-    epe = np.mean(epe_list)
-    d1 = 100 * np.mean(out_list)
+    print(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
+    return {'epe': mean_epe, 'd1': mean_d1, 'thresh': mean_thres}
 
-    print("Validation FlyingThings: %f, %f" % (epe, d1))
-    # print("Validation FlyingThings: %f, %f" % (epe, d1))
-    return {'epe': epe, 'd1': d1}
+# --- Simplified Validation Functions (API) ---
 
+def validate_eth3d(model, device, **kwargs):
+    """Perform validation on the ETH3D dataset."""
+    return validate_dataset(model, 'eth3d', device, iters_s16=1, iters_s8=8, **kwargs)
 
-@torch.no_grad()
-def validate_middlebury(model, config, stage, device, mixed_prec=True, save_outputs=False):
-    """ Peform validation using the Middlebury-V3 dataset """
-    model.eval()
-    val_dataset = build_dataset(config, stage, split="2014")
+def validate_kitti(model, device, **kwargs):
+    """Perform validation on the KITTI-2015 dataset."""
+    return validate_dataset(model, 'kitti', device, **kwargs)
 
-    logging.info(f"Evaluating on Middlebury. Total images: {len(val_dataset)}")
-    
-    # # Benchmark the model for speed
-    # elapsed_time = benchmark_model_fixed(model, device)
-    # print(f"Elapsed time: {elapsed_time} ms")
-    
-    # elapsed_time = benchmark_model(model, val_dataset, device)
-    # print(f"Elapsed time: {elapsed_time} ms")
+def validate_middlebury(model, device, **kwargs):
+    """Perform validation on the Middlebury-V3 dataset."""
+    return validate_dataset(model, 'middlebury', device, **kwargs)
 
-    out_list, epe_list = [], []
-    for val_id in range(len(val_dataset)):
-        image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
-        image1 = image1_inp.half()
-        image2 = image2_inp.half()
-
-        image1 = image1[None].to(device)
-        image2 = image2[None].to(device)
-
-        padder = InputPadder(image1.shape, divis_by=32)
-        image1, image2 = padder.pad(image1, image2)
-        
-        actual_model = model.module if hasattr(model, 'module') else model
-        actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
-
-        with torch.cuda.amp.autocast(enabled=mixed_prec):
-            results = model(image1, image2)
-        
-        flow_pr = results[-1]
-
-        # Save the outputs
-        if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, flow_gt, flow_pr, val_id, 'middlebury')
-        
-        flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
-
-        assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
-        epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-
-        epe_flattened = epe.flatten()
-        val = (valid_gt.reshape(-1) >= -0.5) & (flow_gt[0].reshape(-1) > -1000)
-
-        out = (epe_flattened > 2.0)
-        image_out = out[val].float().mean().item()
-        image_epe = epe_flattened[val].mean().item()
-        # logging.info(f"Middlebury Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
-        epe_list.append(image_epe)
-        out_list.append(image_out)
-
-    epe_list = np.array(epe_list)
-    out_list = np.array(out_list)
-
-    epe = np.mean(epe_list)
-    d1 = 100 * np.mean(out_list)
-
-    print(f"Validation Middlebury: EPE {epe}, D1 {d1}")
-    # print(f"Validation Middlebury: EPE {epe}, D1 {d1}")
-    return {f'epe': epe, f'd1': d1}
-
-
-
-@torch.no_grad()
-def plot_iterations_curve(model, config, stage, device, mixed_prec=True, save_outputs=False):
-    """ Peform validation using the ETH3D (train) split """
-    model.eval()
-    val_dataset = build_dataset(config, stage, split="train")
-
-    logging.info(f"Evaluating on ETH3D. Total images: {len(val_dataset)}")
-    iters_s8_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 30, 50]
-    iters_s16_list = [1, 2, 3, 4]
-
-    # --- Lists to store results for plotting ---
-    epe_results_for_plot = []
-    d1_results_for_plot = []
-
-    for iters_s16 in iters_s16_list:
-        for iters_s8 in iters_s8_list:
-            out_list, epe_list = [], []
-
-            for val_id in range(len(val_dataset)):
-                image1_inp, image2_inp, flow_gt, valid_gt = val_dataset[val_id]
-                image1 = image1_inp.half()
-                image2 = image2_inp.half()
-
-                image1 = image1[None].to(device)
-                image2 = image2[None].to(device)
-
-                padder = InputPadder(image1.shape, divis_by=32)
-                image1, image2 = padder.pad(image1, image2)
-                
-                actual_model = model.module if hasattr(model, 'module') else model
-                actual_model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
-
-                # Inference
-                with torch.no_grad(), torch.cuda.amp.autocast(enabled=mixed_prec):
-                    results = model(image1, image2, iters_s16=iters_s16, iters_s8=iters_s8)
-            
-                flow_pr = results[-1]
-
-                flow_pr = padder.unpad(flow_pr.float()).cpu().squeeze(0)
-                assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
-                epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-
-                epe_flattened = epe.flatten()
-                val = valid_gt.flatten() >= 0.5
-                out = (epe_flattened > 1.0)
-                image_out = out[val].float().mean().item()
-                image_epe = epe_flattened[val].mean().item()
-                epe_list.append(image_epe)
-                out_list.append(image_out)
-
-            epe_list = np.array(epe_list)
-            out_list = np.array(out_list)
-
-            epe = np.mean(epe_list)
-            d1 = 100 * np.mean(out_list)
-
-            epe_results_for_plot.append(epe)
-            d1_results_for_plot.append(d1)
-            
-            print(f"Validation ETH3D for s8: {iters_s8} and s16: {iters_s16}: EPE {epe}, D1 {d1}")
-            # print(f"Validation ETH3D for s8: {iters_s8} and s16: {iters_s16}: EPE {epe}, D1 {d1}")
-
-    # Plot the data
-    plt.figure(figsize=(10, 5))
-    plt.plot(iters_s8_list, epe_results_for_plot[::len(iters_s16_list)], marker='o', label='EPE')
-    plt.plot(iters_s8_list, d1_results_for_plot[::len(iters_s16_list)], marker='x', label='D1')
-    plt.xlabel("Number of S8 Iterations")
-    plt.ylabel("Metric Value")
-    plt.title(f"EPE and D1 vs. S8 Iterations (S16 Iterations: {iters_s16_list[0]})")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig("eth3d_iterations_plot.png")
-    # plt.show()
-
-    return {'epe': epe, 'd1': d1}
-    
+def validate_things(model, device, **kwargs):
+    """Perform validation on the FlyingThings3D dataset."""
+    return validate_dataset(model, 'things', device, **kwargs)
