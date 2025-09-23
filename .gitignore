@@ -6,3 +6,4 @@ outputs*
 *.pth
 *.pyc
 __pycache__/
+TESTING.md
