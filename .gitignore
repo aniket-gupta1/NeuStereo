@@ -2,6 +2,7 @@ logs/
 logdev/
 scripts/
 outputs/
+validation_results/
 outputs*
 *.pth
 *.pyc
