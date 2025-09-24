@@ -19,11 +19,18 @@ def read_img(filename):
         img = np.array(Image.open(filename).convert('RGB')).astype(np.float32)
     return img
 
+def _read_foundation_stereo_flow(filename, scale=1000):
+    depth_uint8 = cv2.imread(filename, cv2.IMREAD_COLOR)
+    depth_uint8 = depth_uint8.astype(float)
+    # Note: cv2 loads images in BGR format, so we need to reverse the channels
+    out = depth_uint8[...,2]*255*255 + depth_uint8[...,1]*255 + depth_uint8[...,0]
+    return out/float(scale)
 
 def read_disp(filename, subset=False, vkitti2=False, sintel=False,
               tartanair=False, instereo2k=False, crestereo=False,
               fallingthings=False,
               argoverse=False,
+              FSD=False,
               raw_disp_png=False,
               ):
     # Scene Flow dataset
@@ -32,6 +39,9 @@ def read_disp(filename, subset=False, vkitti2=False, sintel=False,
         disp = np.ascontiguousarray(_read_pfm(filename)[0])
         if subset:
             disp = -disp
+    #Foundation Stereo Dataset
+    elif FSD:
+        disp = _read_foundation_stereo_flow(filename)
     # VKITTI2 dataset
     elif vkitti2:
         disp = _read_vkitti2_disp(filename)

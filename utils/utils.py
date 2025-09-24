@@ -114,7 +114,7 @@ def prepare_logger(opt: argparse.Namespace, log_path: str = None):
     file_handler.setLevel(logging.DEBUG)
     logger.addHandler(file_handler)
 
-    logger.info('Output and logs will be saved to {}'.format(log_path))
+    # logger.info('Output and logs will be saved to {}'.format(log_path))
 
     return logger, log_path
 

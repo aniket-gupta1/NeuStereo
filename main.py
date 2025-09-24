@@ -209,12 +209,15 @@ def main(cfg, args, logger):
         torch.distributed.init_process_group(backend='nccl')
         torch.cuda.set_device(local_rank)
         device = torch.device(f'cuda:{local_rank}')
+        
+        if args.local_rank==0:
+            logger.info(f"Using multi-gpu training. Total GPUS: {world_size}")
 
     else:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Make the tensorboard writer
-    writer = SummaryWriter(log_dir=cfg.logdir)
+    writer = SummaryWriter(log_dir=cfg.logdir+"/tensorboard/")
 
     # Setup the dataloaders
     if not args.val_only:
@@ -228,9 +231,15 @@ def main(cfg, args, logger):
 
     # Train the model
     if args.val_only:
+        if args.distributed:
+            logger.info("Evaluation on multi-gpu not supported!!")
+            raise ValueError
         trainer.val(model)
     else:
         trainer.fit(model, train_loader, train_sampler)
+
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 if __name__ == '__main__':
     parser = get_args_parser()
@@ -273,6 +282,8 @@ if __name__ == '__main__':
         args.exp_name = cfg.exp_name
     
     logger, cfg.logdir = prepare_logger(args)
+    if args.local_rank==0:
+        logger.info('Output and logs will be saved to {}'.format(cfg.logdir))
 
     # Save the config file to the log directory
     config_out_fname = os.path.join(cfg.logdir, "config.yaml")
