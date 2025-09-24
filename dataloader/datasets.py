@@ -3,7 +3,11 @@ import numpy as np
 from torch.utils.data import Dataset
 from glob import glob
 import cv2
-
+import hashlib
+import json
+import time
+import logging
+import os.path as osp
 from utils.file_io import read_img, read_disp
 
 from . import transforms
@@ -23,6 +27,7 @@ class StereoDataset(Dataset):
                  is_crestereo=False,
                  is_fallingthings=False,
                  is_raw_disp_png=False,
+                 is_FSD=False,
                  half_resolution=False,
                  ):
 
@@ -40,6 +45,7 @@ class StereoDataset(Dataset):
         self.is_fallingthings = is_fallingthings
         self.half_resolution = half_resolution
         self.is_raw_disp_png = is_raw_disp_png
+        self.is_FSD = is_FSD
 
         self.samples = []
 
@@ -63,6 +69,7 @@ class StereoDataset(Dataset):
                                        instereo2k=self.is_instereo2k,
                                        fallingthings=self.is_fallingthings,
                                        crestereo=self.is_crestereo,
+                                       FSD=self.is_FSD,
                                        raw_disp_png=self.is_raw_disp_png,
                                        )  # [H, W]
 
@@ -89,6 +96,197 @@ class StereoDataset(Dataset):
 
         return self
 
+class FoundationStereo(StereoDataset):
+    def __init__(self,
+                 data_dir='/projects/NEUFR/data/FSD',
+                 test_set=False,
+                 validate_subset=False,
+                 only_left=False,
+                 split_folders='all',  # List of split folders or 'all' or single string
+                 max_scenes_per_split=None,  # Limit scenes per split to manage memory
+                 use_cache=True,
+                 transform=None,
+                 ):
+        super(FoundationStereo, self).__init__(transform=transform, is_FSD=True)
+
+        # samples: train: 1108890, test: 0
+
+        # Generate cache filename
+        cache_params = {
+            'split_folders': split_folders,
+            'max_scenes_per_split': max_scenes_per_split,
+            'test_set': test_set,
+            'validate_subset': validate_subset
+        }
+
+        cache_hash = hashlib.md5(str(cache_params).encode()).hexdigest()
+        cache_file = f"{data_dir}/foundation_stereo_cache_{cache_hash}.json"
+
+        # Try loading from cache FIRST
+        if use_cache and os.path.exists(cache_file):
+            success = self.load_from_cache(cache_file, cache_params)
+            if success:
+                return
+
+        # logging.info("Building dataset from scratch (slow)...")
+
+        # Handle split_folders parameter
+        if split_folders is None:
+            split_folders = ['0000000']  # Default to first split
+        elif split_folders == 'all':
+            # Use all available splits
+            split_folders = self.list_available_splits(data_dir)
+            if not split_folders:
+                raise ValueError(f"No split folders found in {data_dir}")
+        elif isinstance(split_folders, str):
+            # Single split folder provided as string
+            split_folders = [split_folders]
+
+        # logging.info(f"Using split folders: {split_folders}")
+
+        all_left_images = []
+        all_right_images = []
+        all_disparity_images = []
+        
+        # Iterate through each split folder
+        for split_folder in split_folders:
+            logging.info(f"\nProcessing split: {split_folder}")
+            
+            # Get all scene directories for this split
+            scene_pattern = osp.join(data_dir, split_folder, '*', 'dataset', 'data')
+            scene_dirs = sorted(glob(scene_pattern))
+            
+            if not scene_dirs:
+                logging.info(f"  Warning: No scene directories found in {split_folder}")
+                continue
+            
+            # Limit scenes per split if specified
+            if max_scenes_per_split:
+                scene_dirs = scene_dirs[:max_scenes_per_split]
+                logging.info(f"  Limited to {len(scene_dirs)} scenes (max_scenes_per_split={max_scenes_per_split})")
+            
+            logging.info(f"Found {len(scene_dirs)} scenes")
+            
+            split_left_images = []
+            split_right_images = []
+            split_disparity_images = []
+            
+            # Collect all images from all scenes in this split
+            for scene_dir in scene_dirs:
+                scene_name = osp.basename(osp.dirname(osp.dirname(scene_dir)))
+                
+                # Get left RGB images
+                left_rgb_dir = osp.join(scene_dir, 'left', 'rgb')
+                left_rgb_pattern = osp.join(left_rgb_dir, '*')
+                scene_left_images = sorted(glob(left_rgb_pattern))
+                
+                # Get corresponding right RGB images and disparity images
+                for left_img in scene_left_images:
+                    img_name = osp.basename(left_img)
+                    
+                    # Right RGB image (same filename in right/rgb/)
+                    right_img = osp.join(scene_dir, 'right', 'rgb', img_name)
+                    
+                    # Disparity image (same filename in left/disparity/)
+                    disp_base = osp.splitext(img_name)[0]
+                    
+                    # Try common disparity extensions
+                    disp_extensions = ['.pfm', '.png', '.exr', '.tiff', '.tif']
+                    disp_img = None
+                    
+                    for ext in disp_extensions:
+                        disp_candidate = osp.join(scene_dir, 'left', 'disparity', disp_base + ext)
+                        if osp.exists(disp_candidate):
+                            disp_img = disp_candidate
+                            break
+                    
+                    # Only add if all three files exist
+                    if osp.exists(left_img) and osp.exists(right_img) and disp_img and osp.exists(disp_img):
+                        split_left_images.append(left_img)
+                        split_right_images.append(right_img)
+                        split_disparity_images.append(disp_img)
+            
+            logging.info(f"Collected {len(split_left_images)} image triplets from {split_folder}")
+            
+            # Add to overall lists
+            all_left_images.extend(split_left_images)
+            all_right_images.extend(split_right_images)
+            all_disparity_images.extend(split_disparity_images)
+
+        logging.info(f"\nTotal images collected: {len(all_left_images)} triplets from {len(split_folders)} splits")
+        
+        if len(all_left_images) == 0:
+            raise ValueError("No valid image triplets found!")
+        
+        # Put all the data in the main samples list
+        for left, right, disparity in zip(all_left_images, all_right_images, all_disparity_images):
+            sample = {
+                'left': left,
+                'right': right,
+                'disp': disparity
+            }
+
+            self.samples.append(sample)
+        
+        # Save cache
+        if use_cache:
+            logging.info(f"Saving dataset to cache: {cache_file}")
+            cache_data = {
+                'image_list': self.image_list,
+                'disp_list': self.disp_list,
+                'created_time': time.time(),
+                'parameters': cache_params,
+                'total_samples': len(self.image_list)
+            }
+            
+            try:
+                with open(cache_file, 'w') as f:
+                    json.dump(cache_data, f, indent=2)
+                logging.info("Cache saved successfully!")
+            except Exception as e:
+                logging.info(f"Failed to save cache: {e}")
+
+    def load_from_cache(self, cache_file, cache_params):
+        # logging.info(f"Loading dataset from cache: {cache_file}")
+        try:
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            
+            # Check if cache parameters match
+            if cached_data.get('parameters') == cache_params:
+                # Load the cached lists directly
+                for (left, right), disparity in zip(cached_data['image_list'], cached_data['disp_list']):
+                    sample = {
+                        'left': left,
+                        'right': right,
+                        'disp': disparity
+                    }
+                    self.samples.append(sample)
+
+                
+                # logging.info(f"Loaded {len(cached_data['image_list'])} samples from cache")
+                # logging.info(f"Cache created: {time.ctime(cached_data.get('created_time', 0))}")
+
+                return True
+            else:
+                logging.info("Cache parameters don't match, rebuilding...")
+
+        except Exception as e:
+            logging.info(f"Cache loading failed: {e}. Rebuilding dataset...")
+            return False
+    
+    @staticmethod
+    def list_available_splits(root):
+        """List all available split folders (0000000, 0000001, etc.)"""
+        splits = []
+        if osp.exists(root):
+            for item in os.listdir(root):
+                item_path = osp.join(root, item)
+                if osp.isdir(item_path) and item.isdigit():
+                    splits.append(item)
+        return sorted(splits)
+
+    
 
 class FlyingThings3D(StereoDataset):
     def __init__(self,
@@ -650,6 +848,22 @@ def build_dataset(args):
         driving = Driving(transform=train_transform)
 
         train_dataset = things + monkaa + driving
+
+        return train_dataset
+    
+    elif args.stage == "FSD":
+        train_transform_list = [transforms.RandomScale(crop_width=768),
+                                transforms.RandomCrop(384, 768),
+                                transforms.RandomColor(),
+                                transforms.RandomVerticalFlip(),
+                                transforms.ToTensor(),
+                                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+                                ]
+
+        train_transform = transforms.Compose(train_transform_list)
+
+        foundation_stereo = FoundationStereo(transform=train_transform)
+        train_dataset = foundation_stereo
 
         return train_dataset
 
