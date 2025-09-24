@@ -1,5 +1,6 @@
 general: 
   logdir: logs/
+  ckpt_dir: checkpoints/
   exp_name: test_single_mask
   TIMEIT: false
   dev: false
@@ -19,6 +20,7 @@ general:
   num_epochs: 100
   max_disp: 400
   val_stage: ['eth3d', 'middlebury', 'kitti']
+  plot_iterations_curve: true
 
 model:
   feature_dim_s16: 128

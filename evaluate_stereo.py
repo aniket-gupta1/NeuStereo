@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import torch
 from tqdm import tqdm
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 # from datasets import build_dataset
 from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3)
 from dataloader import transforms
@@ -25,7 +25,7 @@ def count_parameters(model):
 
 def benchmark_model(model, device):
     elapsed_list = []
-    print("Working on image size: (512, 384)")
+    logging.info("Working on image size: (512, 384)")
     for i in range(50):
         image1, image2 = torch.rand(3, 384, 512), torch.rand(3, 384, 512)
         image1 = image1[None].to(device)
@@ -147,21 +147,33 @@ DATASET_CONFIGS = {
         'class': ETH3DStereo,
         'args': {},
         'epe_threshold': 1.0,
+        'display_name': 'ETH3D',
+        'color': 'blue',
+        'marker': 'o'
     },
     'kitti': {
         'class': KITTI15,
         'args': {'mode': 'training'},
         'epe_threshold': 3.0,
+        'display_name': 'KITTI',
+        'color': 'green',
+        'marker': 's'
     },
     'middlebury': {
         'class': MiddleburyEval3,
         'args': {'resolution': 'Q'},
         'epe_threshold': 2.0,
+        'display_name': 'Middlebury',
+        'color': 'red',
+        'marker': '^'
     },
     'things': {
         'class': FlyingThings3D,
         'args': {'split': 'val'},
         'epe_threshold': 1.0,
+        'display_name': 'FlyingThings3D',
+        'color': 'purple',
+        'marker': 'd',
         # Special filter for FlyingThings3D as per the original code
         'filter_fn': lambda disp: disp.abs() < 192
     },
@@ -188,7 +200,7 @@ def validate_dataset(
         **model_kwargs: Additional keyword arguments for the model's forward pass (e.g., iters_s8).
 
     Returns:
-        A dictionary containing the calculated metrics (EPE and D1).
+        A dictionary containing the calculated metrics (EPE, D1 and threshold_px_error).
     """
     # Put the model in evaluation mode
     model.eval()
@@ -253,14 +265,14 @@ def validate_dataset(
     mean_d1 = val_d1 / valid_samples
     mean_thres = val_thres / valid_samples
 
-    # print(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
-    return {'epe': mean_epe, 'd1': mean_d1, 'thresh': mean_thres}
+    # logging.info(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
+    return {'epe': mean_epe, 'd1': mean_d1*100, 'thresh': mean_thres*100}
 
 # --- Simplified Validation Functions (API) ---
 
 def validate_eth3d(model, device, **kwargs):
     """Perform validation on the ETH3D dataset."""
-    return validate_dataset(model, 'eth3d', device, iters_s16=1, iters_s8=8, **kwargs)
+    return validate_dataset(model, 'eth3d', device, **kwargs)
 
 def validate_kitti(model, device, **kwargs):
     """Perform validation on the KITTI-2015 dataset."""
@@ -273,3 +285,217 @@ def validate_middlebury(model, device, **kwargs):
 def validate_things(model, device, **kwargs):
     """Perform validation on the FlyingThings3D dataset."""
     return validate_dataset(model, 'things', device, **kwargs)
+
+
+def plot_iterations_curve(
+    model: torch.nn.Module,
+    device: str,
+    datasets: Optional[List[str]] = None,
+    plot_combined: bool = True,
+    save_dir: str = "./validation_results",
+    mixed_prec: bool = True
+):
+    """
+    Generates plots of EPE and threshold error metrics vs. number of iterations.
+    
+    Args:
+        model: The model to evaluate
+        device: Device to run on
+        datasets: List of dataset names to evaluate. If None, uses all available.
+        plot_combined: If True, plots all datasets on same figure. If False, separate figures.
+        save_dir: Directory to save plots
+        mixed_prec: Whether to use mixed precision
+    
+    Returns:
+        Dictionary containing all results
+    """
+    model.eval()
+    iters_s8_list = [1, 2, 4, 6, 8, 10, 12, 15, 20, 30]
+    iters_s16_list = [1, 2, 3]
+    if datasets is None:
+        datasets = ['eth3d', 'middlebury', 'kitti']  # Default to commonly used datasets
+    
+    logging.info(f"--- Generating Iteration vs. Performance Curves ---")
+    logging.info(f"Datasets: {datasets}")
+    logging.info(f"S16 iterations: {iters_s16_list}")
+    logging.info(f"S8 iterations: {iters_s8_list}")
+
+    # Store all results
+    all_results = {}
+    
+    for iters_s16 in iters_s16_list:
+        all_results[f's16_{iters_s16}'] = {}
+
+        # Store results for each dataset
+        dataset_results = {ds: {'epe': [], 'd1':[], 'thresh': []} for ds in datasets}
+
+        for iters_s8 in tqdm(iters_s8_list, desc=f"Testing s16={iters_s16}"):
+            for dataset_name in datasets:
+                logging.info(f"  Running {dataset_name} with s16={iters_s16}, s8={iters_s8}")
+                
+                results = validate_dataset(
+                    model, dataset_name, device, 
+                    mixed_prec=mixed_prec,
+                    iters_s16=iters_s16, 
+                    iters_s8=iters_s8
+                )
+                
+                dataset_results[dataset_name]['epe'].append(results['epe'])
+                dataset_results[dataset_name]['d1'].append(results['d1'])
+                dataset_results[dataset_name]['thresh'].append(results['thresh'])
+        
+        all_results[f's16_{iters_s16}']['results'] = dataset_results
+        
+        # =========================================================
+        # region: Plotting code for all the metrics on all the datasets
+        # Combined plot for all datasets
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+        fig.suptitle(f"Performance vs S8 Iterations (S16={iters_s16})", fontsize=16, fontweight='bold')
+        
+        for dataset_name in datasets:
+            config = DATASET_CONFIGS[dataset_name]
+            color = config.get('color', 'blue')
+            marker = config.get('marker', 'o')
+            display_name = config.get('display_name', dataset_name)
+            
+            # EPE subplot
+            ax1.plot(iters_s8_list, dataset_results[dataset_name]['epe'], 
+                    marker=marker, linestyle='-', color=color, 
+                    label=display_name, linewidth=2, markersize=6)
+            
+            # Threshold error subplot
+            thresh_label = f"{display_name} ({config['epe_threshold']:.0f}px)"
+            ax2.plot(iters_s8_list, dataset_results[dataset_name]['thresh'], 
+                    marker=marker, linestyle='-', color=color,
+                    label=thresh_label, linewidth=2, markersize=6)
+        
+        # Configure EPE subplot
+        ax1.set_xlabel("Number of S8 Iterations", fontsize=12)
+        ax1.set_ylabel("EPE (End-Point-Error)", fontsize=12)
+        ax1.set_title("EPE vs Iterations", fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc='upper right', fontsize=10)
+        
+        # Find and mark minimum for each dataset
+        for dataset_name in datasets:
+            epe_values = dataset_results[dataset_name]['epe']
+            min_idx = np.argmin(epe_values)
+            min_val = epe_values[min_idx]
+            min_iter = iters_s8_list[min_idx]
+            ax1.annotate(f'{min_val:.3f}', 
+                        xy=(min_iter, min_val),
+                        xytext=(5, 5), textcoords='offset points',
+                        fontsize=8, color=DATASET_CONFIGS[dataset_name]['color'])
+        
+        # Configure Threshold Error subplot
+        ax2.set_xlabel("Number of S8 Iterations", fontsize=12)
+        ax2.set_ylabel("Pixel Error Rate (%)", fontsize=12)
+        ax2.set_title("Threshold Error vs Iterations", fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(loc='upper right', fontsize=10)
+        
+        # Find and mark minimum for each dataset
+        for dataset_name in datasets:
+            thresh_values = dataset_results[dataset_name]['thresh']
+            min_idx = np.argmin(thresh_values)
+            min_val = thresh_values[min_idx]
+            min_iter = iters_s8_list[min_idx]
+            ax2.annotate(f'{min_val:.2f}%', 
+                        xy=(min_iter, min_val),
+                        xytext=(5, 5), textcoords='offset points',
+                        fontsize=8, color=DATASET_CONFIGS[dataset_name]['color'])
+        
+        plt.tight_layout()
+        save_path = os.path.join(save_dir, f"combined_iterations_s16_{iters_s16}.png")
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logging.info(f"  Saved combined plot to {save_path}")
+        # endregion
+        # =========================================================
+
+    # =========================================================
+    # region: Plotting code for metrics with different s16 values
+    # Create a summary plot comparing different s16 values
+    if len(iters_s16_list) > 1:
+        fig, axes = plt.subplots(len(datasets), 2, figsize=(14, 5*len(datasets)))
+        if len(datasets) == 1:
+            axes = axes.reshape(1, -1)
+        
+        fig.suptitle("Comparison Across Different S16 Values", fontsize=16, fontweight='bold')
+        
+        for idx, dataset_name in enumerate(datasets):
+            config = DATASET_CONFIGS[dataset_name]
+            display_name = config.get('display_name', dataset_name)
+            
+            # EPE comparison
+            ax1 = axes[idx, 0]
+            for s16 in iters_s16_list:
+                results = all_results[f's16_{s16}']['results'][dataset_name]
+                ax1.plot(iters_s8_list, results['epe'], 
+                        marker='o', label=f'S16={s16}', linewidth=2, markersize=5)
+            
+            ax1.set_title(f"{display_name} - EPE Comparison", fontsize=12, fontweight='bold')
+            ax1.set_xlabel("S8 Iterations", fontsize=10)
+            ax1.set_ylabel("EPE", fontsize=10)
+            ax1.grid(True, alpha=0.3)
+            ax1.legend(loc='upper right')
+            
+            # Threshold error comparison
+            ax2 = axes[idx, 1]
+            for s16 in iters_s16_list:
+                results = all_results[f's16_{s16}']['results'][dataset_name]
+                ax2.plot(iters_s8_list, results['thresh'], 
+                        marker='s', label=f'S16={s16}', linewidth=2, markersize=5)
+            
+            ax2.set_title(f"{display_name} - {config['epe_threshold']:.0f}px Error Comparison", 
+                         fontsize=12, fontweight='bold')
+            ax2.set_xlabel("S8 Iterations", fontsize=10)
+            ax2.set_ylabel("Error Rate (%)", fontsize=10)
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(loc='upper right')
+        
+        plt.tight_layout()
+        save_path = os.path.join(save_dir, "s16_comparison.png")
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logging.info(f"\nSaved S16 comparison plot to {save_path}")
+    # endregion    
+    # =========================================================
+
+    # =========================================================
+    # region: Summary of best configurations
+    logging.info("="*60)
+    logging.info("BEST CONFIGURATIONS SUMMARY")
+    logging.info("="*60)
+    
+    for dataset_name in datasets:
+        logging.info(f"\n{DATASET_CONFIGS[dataset_name]['display_name']}:")
+        
+        best_epe = float('inf')
+        best_epe_config = None
+        best_thresh = float('inf')
+        best_thresh_config = None
+        
+        for s16 in iters_s16_list:
+            epe_list = all_results[f's16_{s16}']['results'][dataset_name]['epe']
+            thresh_list = all_results[f's16_{s16}']['results'][dataset_name]['thresh']
+            
+            min_epe_idx = np.argmin(epe_list)
+            min_thresh_idx = np.argmin(thresh_list)
+            
+            if epe_list[min_epe_idx] < best_epe:
+                best_epe = epe_list[min_epe_idx]
+                best_epe_config = (s16, iters_s8_list[min_epe_idx])
+            
+            if thresh_list[min_thresh_idx] < best_thresh:
+                best_thresh = thresh_list[min_thresh_idx]
+                best_thresh_config = (s16, iters_s8_list[min_thresh_idx])
+        
+        logging.info(f"  Best EPE: {best_epe:.4f} (S16={best_epe_config[0]}, S8={best_epe_config[1]})")
+        logging.info(f"  Best {DATASET_CONFIGS[dataset_name]['epe_threshold']:.0f}px Error: "
+              f"{best_thresh:.2f}% (S16={best_thresh_config[0]}, S8={best_thresh_config[1]})")
+    # endregion    
+    # =========================================================
+
+    return all_results
+
