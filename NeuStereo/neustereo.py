@@ -70,6 +70,7 @@ class NeuStereo(torch.nn.Module):
         return features, torch.relu(context)
 
     def forward(self, img0, img1, iters_s16=10, iters_s8=10):
+        # print(iters_s16, iters_s8)
         flow_list = []
         timing_dict = {}
         img0 /= 255.

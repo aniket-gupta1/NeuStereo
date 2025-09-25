@@ -87,7 +87,7 @@ class FeatureAttention(torch.nn.Module):
             concat_features0 = self.norm(concat_features0)
 
 
-        # 1D Attention ->
+        # 1D Attention -> NOTE:This implementation is wrong
         # B,C,H,W = concat_features0.shape
         # concat_features0 = concat_features0.permute(0, 2, 1, 3).reshape(B * H, W, C)  # [B*H, W, C]
         # concat_features1 = torch.cat(concat_features0.chunk(chunks=2, dim=0)[::-1], dim=0)
@@ -103,6 +103,27 @@ class FeatureAttention(torch.nn.Module):
         
         # if self.post_norm:
         #     concat_features0 = self.norm(concat_features0)
+
+        # # 1D Attention ->
+        # B, C, H, W = concat_features0.shape
+        # # Reshape features for 1D attention
+        # features = concat_features0.permute(0,2,3,1).contiguous()
+        # features = features.view(B * H, W, C)
+
+        # # Create the swapped version for cross-attention
+        # features_swapped = torch.cat(features.chunk(chunks=2, dim=0)[::-1], dim=0)
+
+        # # Apply attention
+        # for layer in self.layers:
+        #     features = layer(features, features_swapped)
+        #     features_swapped = torch.cat(features.chunk(chunks=2, dim=0)[::-1], dim=0)
+        
+        # # Reshape back to image format
+        # output_features = features.view(B,H,W,C)
+        # output_features = output_features.permute(0,3,1,2).contiguous()
+
+        # if self.post_norm:
+        #     output_features = self.norm(output_features)
 
         return concat_features0
 
