@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 from typing import Dict, Any, Optional, List
 # from datasets import build_dataset
-from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3)
+from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3, InferenceDataset)
 from dataloader import transforms
 from utils.utils import InputPadder
 from utils.stereo_metric import epe_metric, d1_metric, thres_metric
@@ -268,6 +268,72 @@ def validate_dataset(
     # logging.info(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
     return {'epe': mean_epe, 'd1': mean_d1*100, 'thresh': mean_thres*100}
 
+
+@torch.no_grad()
+def inference_realworld(
+    model: torch.nn.Module,
+    device: str, 
+    mixed_prec: bool = True, 
+    save_outputs: bool = False,
+    **model_kwargs: Any,
+    ):
+    """
+    Performs validation on a specified dataset using a generic, config-driven approach.
+
+    Args:
+        model: The PyTorch model to evaluate.
+        device: The device to run evaluation on ('cuda' or 'cpu').
+        mixed_prec: Whether to use automatic mixed precision.
+        save_outputs: Whether to save visualization images.
+        **model_kwargs: Additional keyword arguments for the model's forward pass (e.g., iters_s8).
+
+    Returns:
+        A dictionary containing the calculated metrics (EPE, D1 and threshold_px_error).
+    """
+    # Put the model in evaluation mode
+    model.eval()
+    
+    # Build validation dataset
+    val_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ])
+    # val_dataset = InferenceDataset(data_dir="/projects/nufr/aniket/Datasets/Shapely_hills/rectified_data/", transform=val_transform)
+    val_dataset = InferenceDataset(data_dir="/projects/nufr/aniket/Datasets/EXP_rectified/", transform=val_transform)
+    # val_dataset = InferenceDataset(data_dir="/projects/nufr/aniket/Datasets/temp", transform=val_transform)
+
+    # Assign constants and log
+    logging.info(f"Evaluating on Inference Dataset Total images: {len(val_dataset)}")
+
+    for val_id in tqdm(range(len(val_dataset)), desc=f"Validating on Inference Dataset"):
+        data = val_dataset[val_id]
+        image1_inp, image2_inp = data['left'], data['right']
+
+        # Convert inputs to half precision and pad the images. 
+        image1 = image1_inp.half()
+        image2 = image2_inp.half()
+        image1 = image1[None].to(device)
+        image2 = image2[None].to(device)
+        padder = InputPadder(image1.shape, divis_by=32)
+        image1, image2 = padder.pad(image1, image2)
+
+        # Intialize model parameters
+        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
+
+        # Inference
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=mixed_prec):
+            results = model(image1, image2, **model_kwargs)
+       
+        disp_pred = results[-1] # Shape [1, H, W]
+        disp_pred = padder.unpad(disp_pred)[0].squeeze(0).cpu() # Shape [H, W]
+        disp_gt = torch.zeros_like(disp_pred)
+
+        # Save the outputs
+        if save_outputs:
+            save_outputs_func(image1_inp, image2_inp, disp_gt, disp_pred, val_id, "Inference")
+
+    return 
+
 # --- Simplified Validation Functions (API) ---
 
 def validate_eth3d(model, device, **kwargs):
@@ -285,6 +351,10 @@ def validate_middlebury(model, device, **kwargs):
 def validate_things(model, device, **kwargs):
     """Perform validation on the FlyingThings3D dataset."""
     return validate_dataset(model, 'things', device, **kwargs)
+
+def inference(model, device, **kwargs):
+    """Run inference on real world dataset"""
+    return inference_realworld(model, device, **kwargs)
 
 
 def plot_iterations_curve(

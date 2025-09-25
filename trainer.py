@@ -119,7 +119,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="kitti":
-                results = validate_kitti(model, device=self.device, save_outputs=False)
+                results = validate_kitti(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 3px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -127,7 +127,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-3px_error', results['thresh'], epoch_num)
 
             if stage=="eth3d":
-                results = validate_eth3d(model, device=self.device, save_outputs=False)
+                results = validate_eth3d(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 1px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -135,12 +135,16 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="middlebury":
-                results = validate_middlebury(model, device=self.device, save_outputs=False)
+                results = validate_middlebury(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 2px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-d1', results['d1'], epoch_num)
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-2px_error', results['thresh'], epoch_num)
+
+            if stage=="inference":
+                inference(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
+
 
         # if self.cfg.plot_iterations_curve:
         #     plot_iterations_curve(actual_model, self.device, datasets=self.cfg.val_stage)

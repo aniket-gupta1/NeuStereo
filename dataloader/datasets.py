@@ -286,7 +286,23 @@ class FoundationStereo(StereoDataset):
                     splits.append(item)
         return sorted(splits)
 
+class InferenceDataset(StereoDataset):
+    def __init__(self,
+                 data_dir = "/projects/nufr/aniket/Datasets/",
+                 transform = None,
+                 ):
+        super(InferenceDataset, self).__init__(transform=transform)
+
+        left_files = sorted(glob(data_dir + '/' + 'left/*.jpg'))
+
+        for left_name in left_files:
+            sample = dict()
+            sample['left'] = left_name
+            sample['right'] = left_name.replace('left', 'right')
+
+            self.samples.append(sample)
     
+
 
 class FlyingThings3D(StereoDataset):
     def __init__(self,
