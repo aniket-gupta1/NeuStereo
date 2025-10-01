@@ -9,6 +9,7 @@ import sys
 import cv2
 import json
 import os
+import h5py
 
 
 def read_img(filename):
@@ -26,6 +27,13 @@ def _read_foundation_stereo_flow(filename, scale=1000):
     out = depth_uint8[...,2]*255*255 + depth_uint8[...,1]*255 + depth_uint8[...,0]
     return out/float(scale)
 
+def _read_spring_disparity(filename):
+    with h5py.File(filename, "r") as f:
+        if "disparity" not in f.keys():
+            raise IOError(f"File {filename} does not have a 'disparity' key. Is this a valid dsp5 file?")
+        return f["disparity"][()].astype(np.float32)
+    
+
 def read_disp(filename, subset=False, vkitti2=False, sintel=False,
               tartanair=False, instereo2k=False, crestereo=False,
               fallingthings=False,
@@ -39,6 +47,8 @@ def read_disp(filename, subset=False, vkitti2=False, sintel=False,
         disp = np.ascontiguousarray(_read_pfm(filename)[0])
         if subset:
             disp = -disp
+    elif filename.endswith(".dsp5"):
+        disp = _read_spring_disparity(filename)
     #Foundation Stereo Dataset
     elif FSD:
         disp = _read_foundation_stereo_flow(filename)
