@@ -292,8 +292,8 @@ class InferenceDataset(StereoDataset):
                  transform = None,
                  ):
         super(InferenceDataset, self).__init__(transform=transform)
-
-        left_files = sorted(glob(data_dir + '/' + 'left/*.jpg'))
+        print("data: ", data_dir)
+        left_files = sorted(glob(data_dir + '/' + 'left/*.png'))
 
         for left_name in left_files:
             sample = dict()
@@ -302,7 +302,23 @@ class InferenceDataset(StereoDataset):
 
             self.samples.append(sample)
     
+class SpringDataset(StereoDataset):
+    def __init__(self, 
+                data_dir='/projects/NEUFR/data/Spring',
+                mode="train",
+                transform=None,
+                ):
+        super(SpringDataset, self).__init__(transform=transform)
 
+        SPRING_SPLIT_TRAIN_SCENES = [1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 20, 21, 22, 23, 25, 26, 27, 30, 33, 36, 37, 38, 41, 43, 45, 47]
+        SPRING_SPLIT_TEST_SCENES = [12, 15, 17, 24, 32, 39, 44]
+
+        assert mode in ["train", "test"]
+        seq_root = os.path.join(data_dir, mode)
+
+
+        
+        
 
 class FlyingThings3D(StereoDataset):
     def __init__(self,

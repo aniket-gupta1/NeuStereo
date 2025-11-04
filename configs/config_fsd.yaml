@@ -19,6 +19,7 @@ general:
   num_epochs: 100
   max_disp: 400
   val_stage: ['eth3d', 'middlebury', 'kitti']
+  # val_stage: ['inference']
 
 model:
   feature_dim_s16: 128

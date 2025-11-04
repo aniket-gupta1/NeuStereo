@@ -31,3 +31,9 @@ model:
   iter_context_dim_s8: 64
   feature_dim_s1: 128
   upsample_method: "raft"
+
+losses:
+  epe_loss: 1.0
+  edge_loss: 0.0
+  planar_loss: 0.0
+  photometric_loss: 0.0

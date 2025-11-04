@@ -23,8 +23,9 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 class VideoStereoDataset(Dataset):
     def __init__(self,
                  transform=None,
-                 sequence_length=3, # Number of frames per sample
+                 sequence_length=1, # Number of frames per sample
                  subsample_groundtruth_spring=True, # Spring provides GT at 4x superresolution
+                 is_middlebury_eth3d=False,
                  ):
         super(VideoStereoDataset, self).__init__()
         self.transform = transform
@@ -70,7 +71,7 @@ class VideoStereoDataset(Dataset):
             'right': right_images,      # Shape: [[C, H, W]...]
             'disp': disparities,        # Shape: [[H, W]...]
             'pose': poses,              # Shape: [[4, 4]...]
-            'intrinsics': intrinsics # Usually the same for the whole sequence
+            'intrinsics': intrinsics    # Usually the same for the whole sequence
         }
 
         # --- Apply transformations ---
@@ -100,7 +101,7 @@ class VideoStereoDataset(Dataset):
                 for frame_idx in range(num_frames - self.sequence_length + 1):
                     self.valid_starts.append((seq_idx, frame_idx))
 
-
+#region: Stereo Vidio Datasets ===================================================================
 class SpringDataset(VideoStereoDataset):
     def __init__(self, 
                  data_dir='/projects/NEUFR/data/Spring',
@@ -142,7 +143,7 @@ class SpringDataset(VideoStereoDataset):
                 sample['disp'] = left_path.replace("frame_left", "disp1_left").replace('.png', '.dsp5')
                 sample['intrinsics'] = intrinsics
                 sample['pose'] = pose
-                # sample['baseline'] = baseline
+                sample['baseline'] = baseline
 
                 sequences[seq].append(sample)
 
@@ -158,6 +159,517 @@ class SpringDataset(VideoStereoDataset):
 
         print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
 
+class InfinigenSV(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/NEUFR/data/Infinigen',
+                 mode="train",
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        # Initialize the parent VideoStereoDataset
+        super(InfinigenSV, self).__init__(transform=transform, sequence_length=sequence_length)
+
+        # --- 1. Find and Group all files by sequence ---
+        seq_root = os.path.join(data_dir, mode)
+        sequences = defaultdict(list)
+        for seq in os.listdir(seq_root):
+            all_left_files = sorted(glob(os.path.join(seq_root, seq, 'frames/Image/camera_0', '*.png')))
+            
+            # Get the intrinsics and poses
+            all_camera_data_path_left = sorted(glob(os.path.join(seq_root, seq, 'frames/camview/camera_0' "*.npz")))
+            intrinsics_list = []
+            poses_list = []
+            for intrinsics_path in all_camera_data_path_left:
+                data_left = np.load(intrinsics_path)
+                data_right = np.load(intrinsics_path.replace('camera_0', 'camera_1'))
+                K = data_left['K']
+                T_left = data_left['T']
+                T_right = data_right['T']
+                intrinsics = torch.tensor([K[0,0], K[1,1], K[0,2], K[1,2]])
+                intrinsics_list.append(intrinsics)
+                pose = torch.tensor(T_left)
+                poses_list.append(pose)
+            
+            # Compute baseline only once
+            baseline = np.linalg.norm(T_left[:3, 3] - T_right[:3, 3])
+
+            assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+
+            for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                sample = {}
+
+                sample['left'] = left_path
+                sample['right'] = left_path.replace("camera_0", "camera_1")
+                sample['disp'] = left_path.replace("Image", "Disparity").replace(".png", ".npy")
+                sample['intrinsics'] = intrinsics
+                sample['pose'] = pose
+                sample['baseline'] = baseline
+
+                sequences[seq].append(sample)
+
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+
+#endregion =======================================================================================
+
+#region: Foundation Stereo Dataset ===============================================================
+class FoundationStereo(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/NEUFR/data/FSD',
+                 split_folders='all',
+                 validate_subset=False,
+                 max_scenes_per_split=None,
+                 test_set=False,
+                 use_cache=True,
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        # Initialize the parent VideoStereoDataset
+        super(FoundationStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_FSD=True)
+
+        self.data_dict = []
+
+        # Generate cache filename
+        cache_params = {
+            'split_folders': split_folders,
+            'max_scenes_per_split': max_scenes_per_split,
+            'test_set': test_set,
+            'validate_subset': validate_subset
+        }
+
+        cache_hash = hashlib.md5(str(cache_params).encode()).hexdigest()
+        cache_file = f"{data_dir}/foundation_stereo_cache_{cache_hash}.json"
+
+        # Try loading from cache FIRST
+        if use_cache and os.path.exists(cache_file):
+            success = self.load_from_cache(cache_file, cache_params)
+
+        # Now the data_dict should be a list of dictionaries containing all file names, we can treat each one as a sequence
+        sequences = defaultdict(list)
+        for seq_id in range(len(self.data_dict)):
+            all_left_files = [self.data_dict[seq_id]['left']]
+            all_right_files = [self.data_dict[seq_id]['right']]
+            all_disp_files = [self.data_dict[seq_id]['disp']]
+
+            intrinsics_list = [torch.tensor([0.0, 0.0, 0.0, 0.0])]
+            poses_list = [torch.eye(4)]
+            baseline = 0.10
+
+            assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+
+            for left_path, right_path, disp_path, intrinsics, pose in zip(all_left_files, all_right_files, all_disp_files, intrinsics_list, poses_list):
+                sample = {}
+
+                sample['left'] = left_path
+                sample['right'] = right_path
+                sample['disp'] = disp_path
+                sample['intrinsics'] = intrinsics
+                sample['pose'] = pose
+                sample['baseline'] = baseline
+
+                sequences[seq_id].append(sample)
+
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+        
+    def load_from_cache(self, cache_file, cache_params):
+        # logging.info(f"Loading dataset from cache: {cache_file}")
+        try:
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            
+            # Check if cache parameters match
+            if cached_data.get('parameters') == cache_params:
+                # Load the cached lists directly
+                for (left, right), disparity in zip(cached_data['image_list'], cached_data['disp_list']):
+                    sample = {
+                        'left': left,
+                        'right': right,
+                        'disp': disparity
+                    }
+                    self.data_dict.append(sample)
+
+                return True
+            else:
+                logging.info("Cache parameters don't match, rebuilding...")
+
+        except Exception as e:
+            logging.info(f"Cache loading failed: {e}. Rebuilding dataset...")
+            return False
+
+#endregion =======================================================================================
+
+#region: SceneFlow Datasets ======================================================================
+class Monkaa(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Monkaa',
+                 split='frames_finalpass',
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        # Initialize the parent VideoStereoDataset
+        super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length)
+
+        # For Monkaa, the intrinsics are same for the entire dataset
+        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+
+        # --- 1. Find and Group all files by sequence ---
+        sequences = defaultdict(list)
+        seq_root = os.path.join(data_dir, split)
+        for seq in os.listdir(seq_root):
+            all_left_files = sorted(glob(os.path.join(seq_root, seq, 'left', '*.png')))
+
+            # For Monkaa, the intrinsics are same for the entire dataset
+            intrinsics_list = [intrinsics for _ in range(len(all_left_files))]
+
+            # Get poses from the camera data
+            poses_list = []
+            with open(os.path.join(data_dir, 'camera_data', seq, "camera_data.txt")) as f:
+                for row in f:
+                    if row.startswith('L'):
+                        pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
+                        pose4x4 = pose1x16.reshape(4,4)
+                        poses_list.append(pose4x4)
+
+            assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+        
+            for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                sample = {}
+
+                sample['left'] = left_path
+                sample['right'] = left_path.replace("left", "right")
+                sample['disp'] = left_path.replace(split, "disparity").replace('.png', '.pfm')
+                sample['intrinsics'] = intrinsics
+                sample['pose'] = pose
+                sample['baseline'] = 1.0
+
+                sequences[seq].append(sample)
+        
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+    
+class Driving(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Driving',
+                 split='frames_finalpass',
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        # Initialize the parent VideoStereoDataset
+        super(Driving, self).__init__(transform=transform, sequence_length=sequence_length)
+
+        # For FlyingThings3D, the intrinsics are same for the entire dataset
+        intrinsics_35 = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics_15 = [450.0, 450.0, 479.5, 269.5]
+
+        # --- 1. Find and Group all files by sequence ---
+        subsets = ['15mm_focallength', '35mm_focallength']
+        directions = ['scene_forwards', 'scene_backwards']
+
+        sequences = defaultdict(list)
+        for subset in subsets:
+            if subset == '15mm_focallength':
+                intrinsics = intrinsics_15
+            else:
+                intrinsics = intrinsics_35
+
+            for direction in directions:
+                seq_root = os.path.join(data_dir, split, subset, direction)
+                for seq in os.listdir(seq_root):
+                    all_left_files = sorted(glob(os.path.join(seq_root, seq, 'left', '*.png')))
+
+                    # Get intrinsics
+                    intrinsics_list = [intrinsics for _ in range(len(all_left_files))]
+
+                    # Get poses from the camera data
+                    poses_list = []
+                    with open(os.path.join(data_dir, 'camera_data', subset, direction, seq, "camera_data.txt")) as f:
+                        for row in f:
+                            if row.startswith('L'):
+                                pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
+                                pose4x4 = pose1x16.reshape(4,4)
+                                poses_list.append(pose4x4)
+
+                    assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+                
+                    for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                        sample = {}
+
+                        sample['left'] = left_path
+                        sample['right'] = left_path.replace("left", "right")
+                        sample['disp'] = left_path.replace(split, "disparity").replace('.png', '.pfm')
+                        sample['intrinsics'] = intrinsics
+                        sample['pose'] = pose
+                        sample['baseline'] = 1.0
+
+                        sequences[seq].append(sample)
+        
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+
+class FlyingThings3D(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/FlyingThings3D',
+                 mode="train",
+                 split='frames_finalpass',
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        # Initialize the parent VideoStereoDataset
+        super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length)
+
+        # For FlyingThings3D, the intrinsics are same for the entire dataset
+        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+
+        # --- 1. Find and Group all files by sequence ---
+        subsets = ['A', 'B', 'C']
+        sequences = defaultdict(list)
+        for subset in subsets:
+            seq_root = os.path.join(data_dir, split, mode, subset)
+            for seq in os.listdir(seq_root):
+                all_left_files = sorted(glob(os.path.join(seq_root, seq, 'left', '*.npy')))
+
+                # For FlyingThings3D, the intrinsics are same for the entire dataset
+                intrinsics_list = [intrinsics for _ in range(len(all_left_files))]
+
+                # Get poses from the camera data
+                poses_list = []
+                with open(os.path.join(data_dir, 'camera_data', mode, subset, seq, "camera_data.txt")) as f:
+                    for row in f:
+                        if row.startswith('L'):
+                            pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
+                            pose4x4 = pose1x16.reshape(4,4)
+                            poses_list.append(pose4x4)
+
+                assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+            
+                for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                    sample = {}
+
+                    sample['left'] = left_path
+                    sample['right'] = left_path.replace("left", "right")
+                    sample['disp'] = left_path.replace(split, "disparity").replace('.png', '.pfm')
+                    sample['intrinsics'] = intrinsics
+                    sample['pose'] = pose
+                    sample['baseline'] = 1.0
+
+                    sequences[seq].append(sample)
+        
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+
+#endregion =======================================================================================
+
+#region: Evaluation Datasets =====================================================================
+class InferenceDataset(VideoStereoDataset):
+    def __init__(self,
+                 data_dir = "/projects/nufr/aniket/Datasets/",
+                 transform = None,
+                 ):
+        super(InferenceDataset, self).__init__(transform=transform)
+        print("data: ", data_dir)
+        left_files = sorted(glob(data_dir + '/' + 'left/*.png'))
+
+        for left_name in left_files:
+            sample = dict()
+            sample['left'] = left_name
+            sample['right'] = left_name.replace('left', 'right')
+
+            self.samples.append(sample)
+
+class KITTI15(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/KITTI/',
+                 mode='training',
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        super(KITTI15, self).__init__(transform=transform, sequence_length=sequence_length)
+
+        # --- 1. Find and Group all files by sequence ---
+        # Since KITTI has no sequence organization, we'll simply read all files and put them in individual lists
+        left_files = sorted(glob(data_dir + '/' + mode + '/image_2/*_10.png'))
+        sequences = defaultdict(list)
+        for seq_id in range(len(left_files)):
+            all_left_files = [left_files[seq_id]]
+
+            intrinsics_list = [torch.tensor([0.0, 0.0, 0.0, 0.0])]
+            poses_list = [torch.eye(4)]
+            baseline = 0.10
+
+            assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+
+            for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                sample = {}
+
+                sample['left'] = left_path
+                sample['right'] = left_path.replace("image_2", "image_3")
+                sample['disp'] = left_path.replace("image_2", "disp_occ_0")
+                sample['intrinsics'] = intrinsics
+                sample['pose'] = pose
+                sample['baseline'] = baseline
+
+                sequences[seq_id].append(sample)
+        
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+
+class ETH3DStereo(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/ETH3D',
+                 mode='two_view_training',
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        super(ETH3DStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True)
+
+        # --- 1. Find and Group all files by sequence ---
+        seq_root = data_dir + '/' + mode 
+        sequences = defaultdict(list)
+        for seq in os.listdir(seq_root):
+            all_left_files = [os.path.join(seq_root, seq, 'im0.png')]
+            
+            # Intrinsics don't really matter for single sequence evaluation so putting in 0's for all
+            intrinsics_list = []
+            with open(os.path.join(seq_root, seq, "calib.txt")) as f:
+                intrinsics_list.append(torch.tensor([0.0, 0.0, 0.0, 0.0]))
+
+                # Read the baseline
+                for line in f:
+                    if line.startswith('baseline='):
+                        baseline = float(line.split('=')[1])
+            
+            # Poses are also not required for single sequence so putting in identity
+            poses_list = [torch.eye(4)]
+
+            assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+
+            for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                sample = {}
+
+                sample['left'] = left_path
+                sample['right'] = left_path.replace("im0", "im1")
+                sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm")
+                sample['intrinsics'] = intrinsics
+                sample['pose'] = pose
+                sample['baseline'] = baseline
+
+                sequences[seq].append(sample)
+
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+
+class MiddleburyEval3(VideoStereoDataset):
+    def __init__(self,
+                 data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Middlebury/MiddEval3',
+                 mode='training',
+                 resolution='H',
+                 transform=None,
+                 sequence_length=1,
+                 ):
+        super(MiddleburyEval3, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True)
+
+        # --- 1. Find and Group all files by sequence ---
+        seq_root = data_dir + '/' + mode + resolution
+        sequences = defaultdict(list)
+        for seq in os.listdir(seq_root):
+            all_left_files = [os.path.join(seq_root, seq, 'im0.png')]
+            
+            # Intrinsics don't really matter for single sequence evaluation so putting in 0's for all
+            intrinsics_list = []
+            with open(os.path.join(seq_root, seq, "calib.txt")) as f:
+                intrinsics_list.append(torch.tensor([0.0, 0.0, 0.0, 0.0]))
+
+                # Read the baseline
+                for line in f:
+                    if line.startswith('baseline='):
+                        baseline = float(line.split('=')[1])
+            
+            # Poses are also not required for single sequence so putting in identity
+            poses_list = [torch.eye(4)]
+
+            assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
+
+            for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
+                sample = {}
+
+                sample['left'] = left_path
+                sample['right'] = left_path.replace("im0", "im1")
+                sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm")
+                sample['intrinsics'] = intrinsics
+                sample['pose'] = pose
+                sample['baseline'] = baseline
+
+                sequences[seq].append(sample)
+
+        # --- 2. Populate self.samples with the grouped sequences ---
+        # Sort by sequence ID to ensure deterministic order
+        for seq_id in sorted(sequences.keys()):
+            # Ensure frames within the sequence are sorted correctly (glob should handle this)
+            self.samples.append(sequences[seq_id])
+            
+        # --- 3. Build the list of valid starting points ---
+        self.build_valid_starts()
+
+        print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
+
+#endregion =======================================================================================
 
 
 def build_dataset(args):
