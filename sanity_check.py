@@ -93,33 +93,33 @@ def plot_video_stereo_debug(
     
     # --- Plot Timestep 0 (Top Row) ---
     axes[0, 0].imshow(img_t0_l); axes[0, 0].set_title("t=0 Left Image")
-    axes[0, 1].imshow(img_t0_r); axes[0, 1].set_title("t=0 Right Image")
+    # axes[0, 1].imshow(img_t0_r); axes[0, 1].set_title("t=0 Right Image")
     
-    im_gt0 = axes[0, 2].imshow(disp_t0_gt, cmap='viridis'); axes[0, 2].set_title("t=0 GT Disparity")
+    im_gt0 = axes[0, 1].imshow(disp_t0_gt, cmap='viridis'); axes[0, 2].set_title("t=0 GT Disparity")
     fig.colorbar(im_gt0, ax=axes[0, 2], orientation='horizontal', pad=0.1)
 
-    im_pred0 = axes[0, 3].imshow(disp_t0_pred, cmap='viridis'); axes[0, 3].set_title("t=0 Predicted Disp")
+    im_pred0 = axes[0, 2].imshow(disp_t0_pred, cmap='viridis'); axes[0, 3].set_title("t=0 Predicted Disp")
     fig.colorbar(im_pred0, ax=axes[0, 3], orientation='horizontal', pad=0.1)
 
     # --- Plot Timestep 1 (Bottom Row) ---
     axes[1, 0].imshow(img_t1_l); axes[1, 0].set_title("t=1 Left Image")
-    axes[1, 1].imshow(img_t1_r); axes[1, 1].set_title("t=1 Right Image")
+    # axes[1, 1].imshow(img_t1_r); axes[1, 1].set_title("t=1 Right Image")
 
-    im_gt1 = axes[1, 2].imshow(disp_t1_gt, cmap='viridis'); axes[1, 2].set_title("t=1 GT Disparity")
+    im_gt1 = axes[1, 1].imshow(disp_t1_gt, cmap='viridis'); axes[1, 2].set_title("t=1 GT Disparity")
     fig.colorbar(im_gt1, ax=axes[1, 2], orientation='horizontal', pad=0.1)
 
-    im_pred1 = axes[1, 3].imshow(disp_t1_pred, cmap='viridis'); axes[1, 3].set_title("t=1 Predicted Disp")
+    im_pred1 = axes[1, 2].imshow(disp_t1_pred, cmap='viridis'); axes[1, 3].set_title("t=1 Predicted Disp")
     fig.colorbar(im_pred1, ax=axes[1, 3], orientation='horizontal', pad=0.1)
 
-    im_warp_d = axes[1, 4].imshow(disp_t1_warped, cmap='viridis'); axes[1, 4].set_title("t=1 Warped Prev. Disp")
+    im_warp_d = axes[1, 3].imshow(disp_t1_warped, cmap='viridis'); axes[1, 4].set_title("t=1 Warped Prev. Disp")
     fig.colorbar(im_warp_d, ax=axes[1, 4], orientation='horizontal', pad=0.1)
 
-    # Plot warped features dynamically
-    for i, (key, feat_plot) in enumerate(warped_feats_plots.items()):
-        col_idx = 5 + i
-        im_feat = axes[1, col_idx].imshow(feat_plot, cmap='plasma')
-        axes[1, col_idx].set_title(f"t=1 Warped Feat '{key}' (Ch 0)")
-        fig.colorbar(im_feat, ax=axes[1, col_idx], orientation='horizontal', pad=0.1)
+    # # Plot warped features dynamically
+    # for i, (key, feat_plot) in enumerate(warped_feats_plots.items()):
+    #     col_idx = 5 + i
+    #     im_feat = axes[1, col_idx].imshow(feat_plot, cmap='plasma')
+    #     axes[1, col_idx].set_title(f"t=1 Warped Feat '{key}' (Ch 0)")
+    #     fig.colorbar(im_feat, ax=axes[1, col_idx], orientation='horizontal', pad=0.1)
         
     # --- Finalize and Save ---
     for ax in axes.ravel():

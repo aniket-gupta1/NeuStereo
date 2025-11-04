@@ -2,6 +2,7 @@ logs/
 logdev/
 scripts/
 outputs/
+debug/
 validation_results/
 outputs*
 *.pth

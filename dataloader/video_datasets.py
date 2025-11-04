@@ -49,7 +49,7 @@ class VideoStereoDataset(Dataset):
         clip_paths = self.samples[seq_idx][frame_idx : frame_idx + self.sequence_length]
 
         # --- Load all data for the sequence ---
-        left_images, right_images, disparities, poses, intrinsics = [], [], [], [], []
+        left_images, right_images, disparities, poses, intrinsics, baselines = [], [], [], [], [], []
 
         for frame_paths in clip_paths:
             # Load images and disparity
@@ -64,6 +64,7 @@ class VideoStereoDataset(Dataset):
 
             intrinsics.append(frame_paths['intrinsics'])
             poses.append(frame_paths['pose'])
+            baselines.append(frame_paths['baseline'])
 
         # --- Collect everything into a single sample dictionary ---
         sample = {
@@ -71,7 +72,8 @@ class VideoStereoDataset(Dataset):
             'right': right_images,      # Shape: [[C, H, W]...]
             'disp': disparities,        # Shape: [[H, W]...]
             'pose': poses,              # Shape: [[4, 4]...]
-            'intrinsics': intrinsics    # Usually the same for the whole sequence
+            'intrinsics': intrinsics,    # Usually the same for the whole sequence
+            'baseline': baselines
         }
 
         # --- Apply transformations ---
