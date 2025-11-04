@@ -71,149 +71,70 @@ class NeuStereo(torch.nn.Module):
 
     def forward(self, img0, img1, iters_s16=10, iters_s8=10):
         # print(iters_s16, iters_s8)
-        flow_list = []
-        timing_dict = {}
+        disp_list = []
         img0 /= 255.
         img1 /= 255.
         
-        if self.TIMEIT:        
-            start_event_total, end_event_total = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-            start_event, end_event = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-            start_event_total.record()
-            start_event.record()
-        
+        # Extract multi-scale features        
         features_s16, features_s8 = self.backbone(torch.cat([img0, img1], dim=0))
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict['Backbone_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
         
+        # Apply Cross Attention and split features
         features_s16 = self.cross_attn_s16(features_s16)
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict['Cross_Attn_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
-        
         features_s16, context_s16 = self.split_features(features_s16, self.config.context_dim_s16, self.config.feature_dim_s16)
         features_s8, context_s8 = self.split_features(features_s8, self.config.context_dim_s8, self.config.feature_dim_s8)
         feature0_s16, feature1_s16 = features_s16.chunk(chunks=2, dim=0)
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict['Feature_Split_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
-        
-        flow0 = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
-        # print(flow0)
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict['Softmax_corr_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
 
+        # Compute left image disparity using softmax matching
+        disp_left = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
+
+        # Initialize the correlation volume
         stereo_corr_pyr_s16 = self.stereo_corr_block_s16.init_corr_pyr(feature0_s16, feature1_s16)
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict['Corr_block_s16_init_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
-
         iter_context_s16 = self.init_iter_context_s16
+
+        # Refine the 1/16th scale disparity
         for i in range(iters_s16):
             if self.training and i > 0:
-                flow0 = flow0.detach()
+                disp_left = disp_left.detach()
 
-            stereo_corrs = self.stereo_corr_block_s16(stereo_corr_pyr_s16, flow0)
-            if self.TIMEIT:
-                end_event.record()
-                torch.cuda.synchronize()
-                timing_dict[f'Corr_block_s16_iter{i}'] = start_event.elapsed_time(end_event)
-                start_event.record()
+            # Compute correlation block and Run refinement network
+            stereo_corrs = self.stereo_corr_block_s16(stereo_corr_pyr_s16, disp_left)
+            iter_context_s16, stereo_delta_disp = self.stereo_refine_s16(stereo_corrs, context_s16, iter_context_s16, disp_left)
 
-            iter_context_s16, stereo_delta_flow = self.stereo_refine_s16(stereo_corrs, context_s16, iter_context_s16, flow0)
-            if self.TIMEIT:
-                end_event.record()
-                torch.cuda.synchronize()
-                timing_dict[f'Corr_block_s16_refine_iter{i}'] = start_event.elapsed_time(end_event)
-                start_event.record()
-
-            flow0 = flow0 + stereo_delta_flow
+            # Add delta disparity and Upsample for supervision
+            disp_left = disp_left + stereo_delta_disp
             if self.training:
-                up_flow0 = F.interpolate(flow0, scale_factor=16, mode='bilinear') * 16
-                flow_list.append(up_flow0)
-                if self.TIMEIT:
-                    end_event.record()
-                    torch.cuda.synchronize()
-                    timing_dict[f'Upsample_op_iters_16'] = start_event.elapsed_time(end_event)
-                    start_event.record()
-    
-        flow0 = F.interpolate(flow0, scale_factor=2, mode='nearest') * 2
+                up_disp_left = F.interpolate(disp_left, scale_factor=16, mode='bilinear') * 16
+                disp_list.append(up_disp_left)
+
+        # Upsample 1/16th scale features and left image disparity to 1/8th scale
+        disp_left = F.interpolate(disp_left, scale_factor=2, mode='nearest') * 2
         features_s16 = F.interpolate(features_s16, scale_factor=2, mode='nearest')
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict[f'Upsample_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
-        
+
+        # Merge 1/8th and 1/16th scale features
         features_s8 = self.merge_s8(torch.cat([features_s8, features_s16], dim=1))
         feature0_s8, feature1_s8 = features_s8.chunk(chunks=2, dim=0)
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict[f'Merge_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
 
-        stereo_corr_pyr_s8 = self.stereo_corr_block_s8.init_corr_pyr(feature0_s8, feature1_s8)
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict[f'Corr_block_s8_init_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
-        
         context_s16 = F.interpolate(context_s16, scale_factor=2, mode='nearest')
         context_s8 = self.context_merge_s8(torch.cat([context_s8, context_s16], dim=1))
-        if self.TIMEIT:
-            end_event.record()
-            torch.cuda.synchronize()
-            timing_dict[f'Context_Merge_time'] = start_event.elapsed_time(end_event)
-            start_event.record()
-        
+
+        # Initialize the correlation volume
+        stereo_corr_pyr_s8 = self.stereo_corr_block_s8.init_corr_pyr(feature0_s8, feature1_s8)       
         iter_context_s8 = self.init_iter_context_s8
+
+        # Refine the 1/8th scale disparity
         for i in range(iters_s8):
             if self.training and i > 0:
-                flow0 = flow0.detach()
+                disp_left = disp_left.detach()
+            
+            # Compute correlation block and Run refinement network
+            stereo_corrs = self.stereo_corr_block_s8(stereo_corr_pyr_s8, disp_left)
+            iter_context_s8, stereo_delta_disp = self.stereo_refine_s8(stereo_corrs, context_s8, iter_context_s8, disp_left)
 
-            stereo_corrs = self.stereo_corr_block_s8(stereo_corr_pyr_s8, flow0)
-            if self.TIMEIT:
-                end_event.record()
-                torch.cuda.synchronize()
-                timing_dict[f'Corr_block_s8_iter{i}'] = start_event.elapsed_time(end_event)
-                start_event.record()
-
-            iter_context_s8, stereo_delta_flow = self.stereo_refine_s8(stereo_corrs, context_s8, iter_context_s8, flow0)
-            if self.TIMEIT:
-                end_event.record()
-                torch.cuda.synchronize()
-                timing_dict[f'Corr_block_s8_refine_iter{i}'] = start_event.elapsed_time(end_event)
-                start_event.record()
-
-            flow0 = flow0 + stereo_delta_flow
+            # Add delta disparity and Upsample for supervision
+            disp_left = disp_left + stereo_delta_disp
             if self.training or i == iters_s8 - 1:
                 feature0_s1 = self.conv_s8(img0)
-                up_flow0 = self.upsample_s8(feature0_s1, flow0) * 8
-                flow_list.append(up_flow0[:, :1])
+                up_disp_left = self.upsample_s8(feature0_s1, disp_left) * 8
+                disp_list.append(up_disp_left[:, :1])
 
-                if self.TIMEIT:
-                    end_event.record()
-                    torch.cuda.synchronize()
-                    timing_dict[f'Upsample_s8_time'] = start_event.elapsed_time(end_event)
-                    start_event.record()
-
-        if self.TIMEIT:
-            end_event_total.record()
-            torch.cuda.synchronize()
-            timing_dict[f'Total_time'] = start_event_total.elapsed_time(end_event_total)
-        
-        return flow_list
+        return disp_list

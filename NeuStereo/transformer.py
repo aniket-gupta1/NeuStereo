@@ -104,7 +104,7 @@ class FeatureAttention(torch.nn.Module):
         # if self.post_norm:
         #     concat_features0 = self.norm(concat_features0)
 
-        # # 1D Attention ->
+        # 1D Attention ->
         # B, C, H, W = concat_features0.shape
         # # Reshape features for 1D attention
         # features = concat_features0.permute(0,2,3,1).contiguous()
