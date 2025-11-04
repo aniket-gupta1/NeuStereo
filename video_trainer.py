@@ -7,7 +7,24 @@ import os
 import pdb
 import torch.nn.functional as F
 from NeuStereo_video.softmax_warp import GeometricWarp
-from sanity_check import plot_video_stereo_debug
+
+# Defensive import for mixed precision
+try:
+    from torch.cuda.amp import GradScaler, autocast
+    AMP_AVAILABLE = True
+except ImportError:
+    print("Warning: torch.cuda.amp not available. Running in float32. Check PyTorch installation for CUDA support.")
+    AMP_AVAILABLE = False
+    class autocast:
+        def __init__(self, enabled=False): pass
+        def __enter__(self): pass
+        def __exit__(self, exc_type, exc_val, exc_tb): pass
+    class GradScaler:
+        def __init__(self, enabled=False): self.enabled = enabled
+        def scale(self, loss): return loss
+        def unscale_(self, optimizer): pass
+        def step(self, optimizer): optimizer.step()
+        def update(self): pass
 
 class Trainer():
     def __init__(self, cfg, args, logger, device, tensorboard_writer) -> None:
@@ -16,9 +33,31 @@ class Trainer():
         self.logger = logger
         self.device = device
         self.tensorboard_writer = tensorboard_writer
-
-        # Make the checkpoint directory
+        self.use_amp = args.enable_amp and AMP_AVAILABLE and self.device.type == 'cuda'
+        self.debug = getattr(args, 'debug', False) # Safely get debug flag
         os.makedirs(self.cfg.logdir + "/checkpoints", exist_ok=True)
+
+    def check_tensor(self, tensor, name, check_stats=True):
+        """Enhanced tensor checker, only active if self.debug is True."""
+        if not self.debug:
+            return
+
+        if tensor is None:
+            print(f"DEBUG: 🟡 {name} is None")
+            return
+        if not isinstance(tensor, torch.Tensor):
+            print(f"DEBUG: 🟡 {name} is not a tensor, but type {type(tensor)}")
+            return
+        
+        has_nan = torch.isnan(tensor).any()
+        has_inf = torch.isinf(tensor).any()
+        
+        if has_nan or has_inf:
+            status = "🔴 NaN" if has_nan else "🔴 Inf"
+            print(f"DEBUG: {status} found in '{name}' | Shape: {tensor.shape}")
+            raise ValueError(f"Numerical instability detected in tensor: {name}")
+        elif check_stats:
+            print(f"DEBUG: ✅ '{name}' is valid | Shape: {tensor.shape} | Mean: {torch.mean(tensor.float()):.4f} | Max: {torch.max(tensor.float()):.4f} | Min: {torch.min(tensor.float()):.4f}")
 
     def get_model(self, model):
         """Get the actual model from DDP wrapper if needed"""
@@ -73,66 +112,73 @@ class Trainer():
         return total_loss, metrics 
 
     def train(self, model, train_loader, optimizer, scaler, epoch_num):
-        # Step 1: Set the model to train mode
         model.train()
-        warper = GeometricWarp()
+        warper = GeometricWarp().to(self.device)
         warper.eval()
-
         actual_model = self.get_model(model)
-        actual_model.init_bhwd(self.cfg.batch_size, 384, 768, self.device)
+        actual_model.init_bhwd(self.cfg.batch_size, 384, 768, self.device, amp=self.use_amp)
 
-        # Step 2: Iterate over the training loader
         for step_num, sample in enumerate(train_loader):
-            # left_images, right_images, gt_disparities, predicted_disparities, warped_disp_t1, warped_features_t1 = [], [], [], [], None, None
+            optimizer.zero_grad(set_to_none=True)
+            total_loss_sequence = None
             
-            # Loop over all the video frames
-            for timestep in range(len(sample['left'])):
-                # Convert everything to cuda first
-                left, right, disp_gt, pose, intrinsics = [sample[x][timestep].to(self.device) for x in sample]
-                # left = sample['left'][timestep].to(self.device)
-                # right = sample['right'][timestep].to(self.device)
-                # disp_gt = sample['disp'][timestep].to(self.device)
-                # pose = sample['pose'][timestep].to(self.device)
-                # intrinsics = sample['intrinsics'][timestep].to(self.device)
+            prev_pose, prev_contexts, prev_disp = None, None, None
+
+            # `video_collate_fn` returns tensors with shape [B, T, ...].
+            # Iterate over timesteps (T) and slice the batch at the time index.
+            T = sample['left'].shape[1]
+            for timestep in range(T):
+                # Convert everything to cuda first by slicing the time dimension.
+                # Ignore any extra keys (e.g. 'frame_mask') and handle optional fields.
+                left = sample['left'][:, timestep].to(self.device)
+                right = sample['right'][:, timestep].to(self.device)
+
+                disp_gt = None
+                if sample.get('disp') is not None:
+                    disp_gt = sample['disp'][:, timestep].to(self.device)
+
+                pose = None
+                if sample.get('pose') is not None:
+                    pose = sample['pose'][:, timestep].to(self.device)
+
+                intrinsics = None
+                if sample.get('intrinsics') is not None:
+                    intrinsics = sample['intrinsics'][:, timestep].to(self.device)
 
                 # Make valid pixels mask
+                if disp_gt is None:
+                    # No ground-truth disparity for this batch/timestep -> skip
+                    continue
+                if intrinsics is None:
+                    # Intrinsics required for warping; skip if missing
+                    continue
+
                 disp_gt = disp_gt.unsqueeze(1)
                 valid = (disp_gt > 0) & (disp_gt < self.cfg.max_disp)
                 if not valid.any():
                     continue
 
                 # Convert images to half precision
-                left = left.half()
-                right = right.half()
+                left_input = left.half() if self.use_amp else left.float()
+                right_input = right.half() if self.use_amp else right.float()
 
-                # left_images.append(left.clone())
-                # right_images.append(right.clone())
-                # gt_disparities.append(disp_gt.clone())
-
-                optimizer.zero_grad()
-                with torch.amp.autocast("cuda", enabled=True):
-                    if timestep==0:
-                        # Run forward pass
-                        disp_preds, contexts = model(left, right, warped_prev_disp=None, warped_prev_contexts=None, iters_s16=1, iters_s8=8)
-                        prev_pose = pose
-                        disp_gt_prev = disp_gt
-
-                        # predicted_disparities.append(disp_preds[-1])
-                        
-                    else:
+                with autocast(enabled=self.use_amp):
+                    warped_disp, warped_contexts = None, None
+                    if timestep > 0 and prev_pose is not None:
+                        if self.debug: print(f"\n--- Timestep {timestep}: Entering Warping ---")
                         with torch.no_grad():
-                            # Compute relative pose
-                            relative_pose = pose @ torch.linalg.inv(prev_pose)
+                            self.check_tensor(prev_disp, "Warp Input: prev_disp")
+                            inv_prev_pose = torch.linalg.inv(prev_pose)
+                            self.check_tensor(inv_prev_pose, "Warp Intermediate: inv_prev_pose")
+                            relative_pose = pose @ inv_prev_pose
+                            self.check_tensor(relative_pose, "Warp Intermediate: relative_pose")
+                            
+                            B = pose.shape[0]
+                            fx = intrinsics[:, 0]
+                            cx = intrinsics[:, 2]
+                            cy = intrinsics[:, 3]
 
-                            # Compute the disparity transformation matrix
-                            batch_size = pose.shape[0]
-                            # Extract intrinsics for each batch element
-                            fx = intrinsics[:, 0]  # [B]
-                            cx = intrinsics[:, 2]  # [B]
-                            cy = intrinsics[:, 3]  # [B]
-
-                            # Create batched Q matrix [B, 4, 4]
-                            Q = torch.zeros(batch_size, 4, 4, device=left.device)
+                            Q = torch.zeros(B, 4, 4, device=left.device, dtype=left_input.dtype)
                             Q[:, 0, 0] = 1.0
                             Q[:, 0, 3] = -cx
                             Q[:, 1, 1] = 1.0
@@ -140,52 +186,49 @@ class Trainer():
                             Q[:, 2, 3] = fx
                             Q[:, 3, 2] = 1.0 / 65.0  # baseline = 65mm
                             T_geo = Q @ relative_pose @ torch.linalg.inv(Q)
+                            self.check_tensor(T_geo, "Warp Intermediate: T_geo")
 
-                            # Warp disparity and context
-                            warped_contexts, warped_disp = warper(contexts, disp_preds[-1], T_geo)
-                            # warped_contexts, warped_disp = warper(contexts, disp_gt_prev.half(), T_geo)
+                            warped_contexts, warped_disp = warper(prev_contexts, prev_disp, T_geo)
+                            self.check_tensor(warped_disp, "Warp Output: warped_disp")
+                            if self.debug: print("--- Exiting Warping ---")
 
-                        # Run forward pass
-                        disp_preds, contexts = model(left, right, warped_prev_disp=warped_disp, warped_prev_contexts=warped_contexts, iters_s16=1, iters_s8=8)
-                        prev_pose = pose
-
-                        # predicted_disparities.append(disp_preds[-1])
-                        # warped_disp_t1 = warped_disp
-                        # warped_features_t1 = warped_contexts
-
-                        # if timestep==1:
-                        #     plot_video_stereo_debug(
-                        #         left_img_t0=left_images[0],
-                        #         right_img_t0=right_images[0],
-                        #         gt_disp_t0=gt_disparities[0],
-                        #         pred_disp_t0=predicted_disparities[0],
-                                
-                        #         left_img_t1=left_images[1],
-                        #         right_img_t1=right_images[1],
-                        #         gt_disp_t1=gt_disparities[1],
-                        #         pred_disp_t1=predicted_disparities[1],
-                                
-                        #         warped_disp_t1=warped_disp_t1,
-                        #         warped_features_t1=warped_features_t1,
-                                
-                        #         save_path=f"debug/step_{step_num}_warp_check.png"
-                        #     )
-
-                        # raise ValueError
+                    disp_preds, contexts = model(left_input, right_input, warped_disp, warped_contexts, iters_s16=1, iters_s8=8)
                     
-                    # Compute Loss
-                    loss, metrics = self.loss_func(left, right, disp_preds, disp_gt, valid, self.cfg.max_disp)
-                
-                # Run backward pass
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
+                    prev_pose, prev_contexts, prev_disp = pose, contexts, disp_preds[-1]
 
-            if self.args.local_rank == 0 and step_num%10==0:
-                self.logger.info(f"Epoch: {epoch_num:3d}, Step: {step_num:6d}, EPE: {metrics['epe']:7.3f}, D1: {metrics['d1']:3.2f}, 1px: {metrics['1px_error']:3.2f}, 2px: {metrics['2px_error']:3.2f}, 3px: {metrics['3px_error']:3.2f}")
-                
+                    loss, metrics = self.loss_func(left, right, disp_preds, disp_gt, valid, self.cfg.max_disp)
+                    # Accumulate losses as a tensor. Initialize on first real loss.
+                    if total_loss_sequence is None:
+                        total_loss_sequence = loss
+                    else:
+                        total_loss_sequence = total_loss_sequence + loss
+
+            if total_loss_sequence is not None:
+                if self.use_amp:
+                    scaler.scale(total_loss_sequence).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    total_loss_sequence.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+
+            if self.args.local_rank == 0 and step_num % 10 == 0 and total_loss_sequence is not None:
+                # Log the full set of original metrics (only if we computed a loss)
+                try:
+                    seq_loss_val = total_loss_sequence.item()
+                except Exception:
+                    seq_loss_val = float(total_loss_sequence)
+
+                log_msg = (f"Epoch: {epoch_num:3d}, Step: {step_num:6d}, Seq Loss: {seq_loss_val:.4f}, "
+                           f"EPE: {metrics['epe']:.3f}, D1: {metrics['d1']:.2f}, "
+                           f"1px: {metrics['1px_error']:.2f}, 3px: {metrics['3px_error']:.2f}")
+                self.logger.info(log_msg)
+                self.tensorboard_writer.add_scalar('Train/Loss', seq_loss_val, epoch_num * len(train_loader) + step_num)
+                self.tensorboard_writer.add_scalar('Train/EPE', metrics['epe'], epoch_num * len(train_loader) + step_num)
+    
                 # Add the loss, epe, mag and learning rate to tensorboard
                 self.tensorboard_writer.add_scalar('Train/Loss', loss.item(), epoch_num * len(train_loader) + step_num)
                 self.tensorboard_writer.add_scalar('Train/EPE', metrics['epe'], epoch_num * len(train_loader) + step_num)
@@ -235,21 +278,16 @@ class Trainer():
             if stage=="inference":
                 inference(model, device=self.device, save_outputs=False, iters_s16=1, iters_s8=8)
 
-
-        # if self.cfg.plot_iterations_curve:
-        #     plot_iterations_curve(actual_model, self.device, datasets=self.cfg.val_stage)
-
     def fit(self, model, train_loader, train_sampler):
-        # Step 1: Configure the optimizer, mixed precision, learning rate scheduler
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-        scaler = torch.amp.GradScaler('cuda')
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
+        scaler = GradScaler(enabled=self.use_amp)
         
-        # Step 2: Run the training loop
-        for epoch_num in range(1, self.cfg.num_epochs+1):
+        for epoch_num in range(1, self.cfg.num_epochs + 1):
+            if train_sampler is not None and self.args.distributed:
+                train_sampler.set_epoch(epoch_num)
             self.train(model, train_loader, optimizer, scaler, epoch_num)
-
-            # Save the checkpoint before validation
-            self.save_checkpoint(model, optimizer, epoch_num)
+            if self.args.local_rank == 0:
+                self.save_checkpoint(model, optimizer, epoch_num)
 
             if epoch_num % self.cfg.val_freq == 0 and not self.args.distributed:
                 self.val(model, epoch_num)

@@ -5,6 +5,8 @@ from easydict import EasyDict
 import argparse
 import os
 from dataloader.video_datasets import build_dataset
+from dataloader.video_samplers import LengthAugmentedDataset, LengthGroupedBatchSampler
+from dataloader.video_collate import video_collate_fn
 from NeuStereo_video.neustereo_video import NeuStereo
 from video_trainer import Trainer
 from utils.utils import prepare_logger, load_config
@@ -46,13 +48,40 @@ def get_args_parser():
 
     # Output
     parser.add_argument('--save_output', default=False, type=bool)
+    parser.add_argument('--debug', action='store_true', help='Enable detailed tensor debugging output.')
+
 
     return parser
 
 def setup_dataloaders(cfg, args, logger):
     train_dataset_list = []
-   
+
+    # build combined video-compatible dataset (may contain many starts)
     train_dataset = build_dataset(cfg)
+    # ensure we have all starts available for length-grouped sampling
+    train_dataset.build_all_starts()
+
+    # determine allowed lengths from config or default
+    if hasattr(cfg, 'allowed_sequence_lengths') and cfg.allowed_sequence_lengths:
+        allowed_lengths = list(cfg.allowed_sequence_lengths)
+    else:
+        # default: allow lengths [1,3,5] clipped to dataset max
+        max_len = max(train_dataset.max_len_per_start) if len(train_dataset.max_len_per_start) > 0 else 1
+        allowed_lengths = [L for L in [1, 3, 5] if L <= max_len]
+
+    # create length-augmented dataset and a batch-sampler that groups by length
+    length_aug_ds = LengthAugmentedDataset(train_dataset, allowed_lengths)
+
+    # length probabilities optionally provided in config as a mapping {L: prob}
+    length_probs = None
+    if hasattr(cfg, 'length_probs') and cfg.length_probs:
+        try:
+            # convert keys to int
+            length_probs = {int(k): float(v) for k, v in dict(cfg.length_probs).items()}
+        except Exception:
+            length_probs = None
+
+    batch_sampler = LengthGroupedBatchSampler(length_aug_ds, batch_size=cfg.batch_size, drop_last=True, shuffle=True, length_probs=length_probs)
     # for stage in cfg.stage:
     #     config = load_config(f"configs/dataset/{stage}.yaml")
     #     train_dataset_i = build_dataset(stage)
@@ -93,14 +122,13 @@ def setup_dataloaders(cfg, args, logger):
     # Initialize the dataloader
     shuffle = False if args.distributed else True
     # shuffle = False 
+    # Use our batch_sampler and collate function to ensure consistent lengths in each batch
     train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle,
+        length_aug_ds,
+        batch_sampler=batch_sampler,
         num_workers=cfg.num_workers,
         pin_memory=True,
-        drop_last=True,
-        sampler=train_sampler
+        collate_fn=video_collate_fn
     )
 
     return train_loader, train_sampler
@@ -257,13 +285,13 @@ if __name__ == '__main__':
     # Store different datasets to its own subdirectory
     # In case of training on multiple datasets, join their names with '_' and make a new directory
     # cfg.dataset is a list of dataset names
-    # logdir_name = ""
-    # if len(cfg.stage) == 1:
-    #     logdir_name = cfg.stage[0]
-    # else:
-    #     for dataset_name in cfg.stage:
-    #         logdir_name += dataset_name + "_"
-    logdir_name = cfg.stage
+    logdir_name = ""
+    if len(cfg.stage) == 1:
+        logdir_name = cfg.stage[0]
+    else:
+        for dataset_name in cfg.stage:
+           logdir_name += dataset_name + "_"
+    # logdir_name = cfg.stage
     
     if args.dev:
         cfg.logdir = "logdev/"
