@@ -55,6 +55,10 @@ class GeometricWarp(nn.Module):
         warped_features_dict = {}
         
         for scale_key, src_features in src_features_dict.items():
+            if src_features is None:
+                warped_features_dict[scale_key] = None
+                continue
+                
             _, C, H, W = src_features.shape
             
             # --- Scale projection coordinates to the current feature map's resolution ---
@@ -69,21 +73,27 @@ class GeometricWarp(nn.Module):
             # Downsample disparity and importance weights to match current scale
             # We use the original disparity for importance to preserve occlusion priority
             src_disp_scaled = F.interpolate(src_disp, size=(H, W), mode='bilinear', align_corners=False)
-            importance_weights = torch.exp(src_disp_scaled.view(B, 1, H * W))
+            src_disp_flat = src_disp_scaled.view(B, 1, H * W)
+            disp_max = torch.max(src_disp_flat, dim=2, keepdim=True)[0]
+            importance_weights = torch.exp(src_disp_flat - disp_max)
             
-            # This splatting logic is now scale-generic
             warped_features_dict[scale_key] = self._splat(
                 src_features.view(B, C, H * W),
                 importance_weights,
-                u_proj.view(B, 1, H_ref, W_ref), # Pass original projection for correct sampling
-                v_proj.view(B, 1, H_ref, W_ref), #
+                u_proj.view(B, 1, H_ref, W_ref),
+                v_proj.view(B, 1, H_ref, W_ref),
                 H, W
             )
 
         # --- Step 3: Warp the disparity map itself at its native resolution ---
+        # For numerical stability subtract the per-sample max before exp
+        src_disp_flat_ref = src_disp.view(B, 1, H_ref * W_ref)
+        disp_max_ref = torch.max(src_disp_flat_ref, dim=2, keepdim=True)[0]
+        importance_ref = torch.exp(src_disp_flat_ref - disp_max_ref)
+
         warped_disp = self._splat(
-            src_disp.view(B, 1, H_ref * W_ref),
-            torch.exp(src_disp.view(B, 1, H_ref * W_ref)),
+            src_disp_flat_ref,
+            importance_ref,
             u_proj_ref.view(B, 1, H_ref, W_ref),
             v_proj_ref.view(B, 1, H_ref, W_ref),
             H_ref, W_ref
@@ -95,7 +105,6 @@ class GeometricWarp(nn.Module):
         """A generic, vectorized splatting function."""
         B, C, _ = src_values.shape
         device = src_values.device
-        # pdb.set_trace()
         
         # Resample projected coordinates to the current grid size for splatting
         u_proj_resampled = F.interpolate(u_proj, size=(H,W), mode='bilinear', align_corners=False).view(B, 1, H*W)
@@ -125,7 +134,6 @@ class GeometricWarp(nn.Module):
         valid_u = all_u.view(-1)[valid_mask]
         
         expanded_values = src_values.repeat(1, 1, 4)
-        # expanded_values = src_values.repeat_interleave(4, dim=2)
         valid_values = expanded_values.permute(0, 2, 1).reshape(-1, C)[valid_mask]
         valid_weights = splat_weights.view(-1)[valid_mask]
         
@@ -135,9 +143,11 @@ class GeometricWarp(nn.Module):
         warped_values = torch.zeros(B * H * W, C, device=device)
         warped_values.index_add_(0, flat_indices, valid_values * valid_weights.unsqueeze(1))
         
-        normalization_map = torch.zeros(B * H * W, device=device)
+        normalization_map = torch.zeros(B * H * W, device=device, dtype=src_values.dtype)
         normalization_map.index_add_(0, flat_indices, valid_weights)
         
-        # Normalize and reshape
-        normalized_values = warped_values / (normalization_map.unsqueeze(1) + 1e-8)
+        # Clamp the normalization map to prevent division by zero, then normalize.
+        normalization_map_clamped = normalization_map.unsqueeze(1).clamp(min=1e-6)
+        normalized_values = warped_values / normalization_map_clamped
+        
         return normalized_values.reshape(B, H, W, C).permute(0, 3, 1, 2)
