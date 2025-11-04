@@ -24,7 +24,7 @@ class VideoStereoDataset(Dataset):
     def __init__(self,
                  transform=None,
                  sequence_length=1, # Number of frames per sample
-                 subsample_groundtruth_spring=False, # Spring provides GT at 4x superresolution
+                 subsample_groundtruth_2x=False, # Spring provides GT at 4x (2x * 2x) superresolution
                  is_middlebury_eth3d=False,
                  ):
         super(VideoStereoDataset, self).__init__()
@@ -112,10 +112,10 @@ class SpringDataset(VideoStereoDataset):
                  data_dir='/projects/NEUFR/data/Spring',
                  mode="train",
                  transform=None,
-                 sequence_length=3,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
-        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_spring=True)
+        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_2x=True)
         
         baseline = torch.tensor(0.065) # Fixed for the whole spring dataset
 
