@@ -17,50 +17,55 @@ def _calculate_flow_jit_dynamic(
     disparity_scaled: torch.Tensor,     # (B, 1, H, W)
     relative_pose: torch.Tensor,        # (B, 4, 4)
     grid_uv: torch.Tensor,              # (B, 2, H, W) Pre-computed grid
-    fx: torch.Tensor,                   # (B, 1, 1, 1) Scaled fx
-    fy: torch.Tensor,                   # (B, 1, 1, 1) Scaled fy
-    cx: torch.Tensor,                   # (B, 1, 1, 1) Scaled cx
-    cy: torch.Tensor,                   # (B, 1, 1, 1) Scaled cy
-    baseline: torch.Tensor,             # (B, 1, 1, 1) Baseline
+    fx: torch.Tensor,                   # (B, 1, 1, 1) <-- FIX: Must be 4D
+    fy: torch.Tensor,                   # (B, 1, 1, 1) <-- FIX: Must be 4D
+    cx: torch.Tensor,                   # (B, 1, 1, 1) <-- FIX: Must be 4D
+    cy: torch.Tensor,                   # (B, 1, 1, 1) <-- FIX: Must be 4D
+    baseline: torch.Tensor,             # (B, 1, 1, 1) <-- FIX: Must be 4D
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     JIT-compiled function for 3D-to-2D flow with DYNAMIC intrinsics.
-    
-    This function calculates P_norm dynamically inside the fused kernel.
+    All scalar inputs (fx, fy, cx, cy, baseline) must be 4D: [B, 1, 1, 1].
     """
     B, _, H, W = disparity_scaled.shape
     device = disparity_scaled.device
 
     # --- 1. Dynamic P_norm Calculation (Inside JIT) ---
+    # (B,1,H,W) - (B,1,1,1) -> (B,1,H,W) (This broadcast is now unambiguous)
     u_norm = (grid_uv[:, 0:1] - cx) / fx
     v_norm = (grid_uv[:, 1:2] - cy) / fy
-    P_norm = torch.cat(
-        [u_norm, v_norm, torch.ones_like(u_norm)], dim=1
-    ) # (B, 3, H, W)
+    
+    ones_buffer = torch.ones_like(u_norm)
+    P_norm = torch.cat([u_norm, v_norm, ones_buffer], dim=1) # (B, 3, H, W)
 
     # --- 2. Unproject (Optimized) ---
-    # Z = f * b / d
-    # P_t-1 = Z * P_norm
+    # (B,1,1,1) * (B,1,1,1) / (B,1,H,W) -> (B,1,H,W)
     Z_t_minus_1 = (fx * baseline) / disparity_scaled.clamp(min=1e-6)
-    P_t_minus_1 = Z_t_minus_1 * P_norm  # (B, 3, H, W)
+    
+    # --- ERROR WAS HERE ---
+    # (B,1,H,W) * (B,3,H,W)
+    # This explicit broadcast makes the JIT compiler's job easy.
+    P_t_minus_1 = Z_t_minus_1.expand(-1, 3, -1, -1) * P_norm
 
     # --- 3. To Homogeneous & Transform ---
-    P_t_minus_1_hom = torch.cat(
-        [
-            P_t_minus_1.view(B, 3, -1),
-            torch.ones(B, 1, H * W, device=device),
-        ],
-        dim=1,
-    )
-    P_t_hom = torch.bmm(relative_pose, P_t_minus_1_hom)
+    P_t_minus_1_flat = P_t_minus_1.view(B, 3, -1) # (B, 3, N)
+    
+    ones_bmm = torch.ones(B, 1, H * W, 
+                          device=device, 
+                          dtype=P_t_minus_1_flat.dtype)
+
+    P_t_minus_1_hom = torch.cat([P_t_minus_1_flat, ones_bmm], dim=1) # (B, 4, N)
+    P_t_hom = torch.bmm(relative_pose, P_t_minus_1_hom) # (B, 4, N)
 
     # --- 4. Re-project (Optimized) ---
-    X_t = P_t_hom[:, 0:1]
-    Y_t = P_t_hom[:, 1:2]
-    Z_t = P_t_hom[:, 2:3].clamp(min=1e-6)
+    X_t = P_t_hom[:, 0:1] # (B, 1, N)
+    Y_t = P_t_hom[:, 1:2] # (B, 1, N)
+    Z_t = P_t_hom[:, 2:3].clamp(min=1e-6) # (B, 1, N)
 
-    u_prime = (fx * X_t / Z_t + cx.view(B, 1, 1)) # Re-project
-    v_prime = (fy * Y_t / Z_t + cy.view(B, 1, 1)) # Re-project
+    # (B,1,1,1) * (B,1,N) / (B,1,N) + (B,1,1,1)
+    # We must .view() the 4D intrinsics back to 3D for bmm-style broadcast
+    u_prime = (fx.view(B,1,1) * X_t / Z_t + cx.view(B,1,1))
+    v_prime = (fy.view(B,1,1) * Y_t / Z_t + cy.view(B,1,1))
 
     coords_t = torch.cat([u_prime, v_prime], dim=1).view(B, 2, H, W)
 
@@ -99,7 +104,7 @@ class SoftmaxWarper(nn.Module):
             grid_y, grid_x = torch.meshgrid(
                 torch.arange(H), torch.arange(W), indexing="ij"
             )
-            grid_uv = torch.stack([grid_x, grid_y], dim=0).float() # (2, H, W)
+            grid_uv = torch.stack([grid_x, grid_y], dim=0).half() # (2, H, W)
             # Register as buffer (will be moved to device with model)
             self.register_buffer(f"grid_uv_{s_str}", grid_uv)
 
@@ -112,6 +117,20 @@ class SoftmaxWarper(nn.Module):
         intrinsics: torch.Tensor,     # (B, 4) tensor [fx, fy, cx, cy]
         baseline: torch.Tensor        # (B) tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        
+        # # Clamp disparity to a small positive number to prevent
+        # # numerical instability (e.g., division by zero, log(neg)).
+        # disparity_prev = torch.clamp(disparity_prev, min=0.1)
+        assert disparity_prev.min()>0.0
+
+        # print("disparity shape: ", disparity_prev.shape)
+        # print("disparity min: ", disparity_prev.min())
+        # print("disparity max: ", disparity_prev.max())
+        # print("context_prev_8: ", context_prev_8.shape)
+        # print("context_prev_16: ", context_prev_16.shape)
+        # print("relative_pose: ", relative_pose.shape)
+        # print("intrinsics: ", intrinsics.shape)
+        # print("baselines: ", baseline.shape)
 
         B = disparity_prev.shape[0]
         # Reshape intrinsics for broadcasting
@@ -134,7 +153,7 @@ class SoftmaxWarper(nn.Module):
         warped_disparity = softsplat.softsplat(
             tenIn=disparity_prev,
             tenFlow=flow_1_0,
-            tenMetric=importance_1_0,
+            tenMetric=(-20.0 * importance_1_0).clip(-20.0, 20.0),
             strMode='soft'
         )
 
@@ -160,7 +179,7 @@ class SoftmaxWarper(nn.Module):
         warped_context_8 = softsplat.softsplat(
             tenIn=context_prev_8,
             tenFlow=flow_0_125,
-            tenMetric=importance_0_125,
+            tenMetric=(-20.0 * importance_0_125).clip(-20.0, 20.0),
             strMode='soft'
         )
         
@@ -186,11 +205,16 @@ class SoftmaxWarper(nn.Module):
         warped_context_16 = softsplat.softsplat(
             tenIn=context_prev_16,
             tenFlow=flow_0_0625,
-            tenMetric=importance_0_0625,
+            tenMetric=(-20.0 * importance_0_0625).clip(-20.0, 20.0), 
             strMode='soft'
         )
         
-        return warped_disparity, warped_context_8, warped_context_16
+        warped_contexts = {
+            "s16": warped_context_16,
+            's8': warped_context_8
+        }
+
+        return warped_contexts, warped_disparity
 
 # --- Example Usage (Demonstration) ---
 if __name__ == "__main__":
