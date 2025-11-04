@@ -56,11 +56,14 @@ class VideoStereoDataset(Dataset):
             left_images.append(read_img(frame_paths['left']))
             right_images.append(read_img(frame_paths['right']))
             
-            if 'disp' in frame_paths:
+            disp = None
+            if 'disp' in frame_paths and frame_paths['disp'] is not None:
                 disp = read_disp(frame_paths['disp'])
-                if self.subsample_groundtruth_spring:
-                    disp = disp[::2,::2]
-                disparities.append(disp)
+                if disp is not None:
+                    assert (disp >= 0).all(), f"Negative disparity found in {frame_paths['disp']}"
+                    if self.subsample_groundtruth_spring:
+                        disp = disp[::2,::2]
+            disparities.append(disp)
 
             intrinsics.append(frame_paths['intrinsics'])
             poses.append(frame_paths['pose'])
