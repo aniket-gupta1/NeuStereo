@@ -1,12 +1,12 @@
 import torch
-from evaluate_stereo import *
+from evaluate_stereo_video import *
 from utils.utils import load_config
 from utils.losses import EPE_loss, edge_aware_smoothness_loss, second_order_smoothness_loss, photometric_reconstruction_loss
 from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import os
 import pdb
 import torch.nn.functional as F
-from NeuStereo_video.softmax_warp import GeometricWarp
+from NeuStereo_video.softmax_warp import SoftmaxWarper
 from sanity_check import plot_video_stereo_debug
 
 class Trainer():
@@ -75,7 +75,7 @@ class Trainer():
     def train(self, model, train_loader, optimizer, scaler, epoch_num):
         # Step 1: Set the model to train mode
         model.train()
-        warper = GeometricWarp()
+        warper = SoftmaxWarper()
         warper.eval()
 
         actual_model = self.get_model(model)
@@ -88,12 +88,7 @@ class Trainer():
             # Loop over all the video frames
             for timestep in range(len(sample['left'])):
                 # Convert everything to cuda first
-                left, right, disp_gt, pose, intrinsics = [sample[x][timestep].to(self.device) for x in sample]
-                # left = sample['left'][timestep].to(self.device)
-                # right = sample['right'][timestep].to(self.device)
-                # disp_gt = sample['disp'][timestep].to(self.device)
-                # pose = sample['pose'][timestep].to(self.device)
-                # intrinsics = sample['intrinsics'][timestep].to(self.device)
+                left, right, disp_gt, pose, intrinsics, baseline = [sample[x][timestep].to(self.device) for x in sample]
 
                 # Make valid pixels mask
                 disp_gt = disp_gt.unsqueeze(1)
@@ -120,6 +115,8 @@ class Trainer():
                         # predicted_disparities.append(disp_preds[-1])
                         
                     else:
+                        
+
                         with torch.no_grad():
                             # Compute relative pose
                             relative_pose = pose @ torch.linalg.inv(prev_pose)
@@ -196,7 +193,7 @@ class Trainer():
                 self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + step_num)
 
     def val(self, model, epoch_num=1):
-        iters_s16, iters_s8 = 40,40
+        iters_s16, iters_s8 = 1,8
         self.logger.info(f"Using s16 refinements: {iters_s16} and s8 refinements: {iters_s8}")
     
         for stage in self.cfg.val_stage:

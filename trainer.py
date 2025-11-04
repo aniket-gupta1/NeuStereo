@@ -1,6 +1,7 @@
 import torch
 from evaluate_stereo import *
 from utils.utils import load_config
+from utils.losses import EPE_loss, edge_aware_smoothness_loss, second_order_smoothness_loss, photometric_reconstruction_loss
 from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import os
 import pdb
@@ -32,18 +33,22 @@ class Trainer():
 
         torch.save(checkpoint, self.cfg.logdir + f"/checkpoints/epoch_{epoch_num}.pth")
 
-    def loss_func(self, pred_disps, gt_disp, mask, max_disp=400, gamma=0.9):
+    def loss_func(self, left, right, pred_disps, gt_disp, mask, max_disp=400, gamma=0.9):
         # Compute Smooth L1 loss with GT disparity 
-        loss_weights = [0.9 ** (len(pred_disps) - 1 - power) for power in
-                            range(len(pred_disps))]
-        disp_loss = 0
-        
-        for k in range(len(pred_disps)):
-            pred_disp = pred_disps[k]
-            weight = loss_weights[k]
+        disp_loss = EPE_loss(pred_disps, gt_disp, mask, gamma)
 
-            curr_loss = F.smooth_l1_loss(pred_disp[mask], gt_disp[mask], reduction='mean')
-            disp_loss += weight * curr_loss
+        # Compute First Order Smoothness Loss (Edge Loss)
+        edge_loss = edge_aware_smoothness_loss(pred_disps, left)
+
+        # Compute Second Order Smoothness Loss (Planar Loss)
+        # planar_loss = second_order_smoothness_loss(pred_disps, left)
+        # planar_loss = second_order_smoothness_loss(gt_disp, left)
+
+        # Compute Photometric Loss (By warping left image with the predicted disparity and taking L1 loss)
+        # photometric_loss = photometric_reconstruction_loss(pred_disps, left, right, ssim_weight=0.85)
+        # photometric_loss = photometric_reconstruction_loss(gt_disp.half(), left, right, ssim_weight=0.85)
+
+        pdb.set_trace()
 
         total_loss = disp_loss
 
@@ -74,21 +79,21 @@ class Trainer():
 
         # Step 2: Iterate over the training loader
         for i, sample in enumerate(train_loader):
-            img1, img2, disp_gt = [sample[x].to(self.device) for x in sample]
+            left, right, disp_gt = [sample[x].to(self.device) for x in sample]
             disp_gt = disp_gt.unsqueeze(1)
             valid = (disp_gt > 0) & (disp_gt < self.cfg.max_disp)
             if not valid.any():
                 continue
 
-            img1 = img1.half()
-            img2 = img2.half()
+            left = left.half()
+            right = right.half()
             # actual_model = self.get_model(model)
-            # actual_model.init_bhwd(img1.shape[0], img1.shape[-2], img1.shape[-1], self.device)
+            # actual_model.init_bhwd(left.shape[0], left.shape[-2], left.shape[-1], self.device)
             
             optimizer.zero_grad()
             with torch.amp.autocast("cuda", enabled=True):
-                disp_preds = model(img1, img2, iters_s16=1, iters_s8=8)
-                loss, metrics = self.loss_func(disp_preds, disp_gt, valid, self.cfg.max_disp)
+                disp_preds = model(left, right, iters_s16=1, iters_s8=8)
+                loss, metrics = self.loss_func(left, right, disp_preds, disp_gt, valid, self.cfg.max_disp)
             
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -109,6 +114,9 @@ class Trainer():
                 self.tensorboard_writer.add_scalar('Train/LR', optimizer.param_groups[-1]['lr'], epoch_num * len(train_loader) + i)
 
     def val(self, model, epoch_num=1):
+        iters_s16, iters_s8 = 40,40
+        self.logger.info(f"Using s16 refinements: {iters_s16} and s8 refinements: {iters_s8}")
+    
         for stage in self.cfg.val_stage:
             if stage=="flyingthings":
                 results = validate_things(model, device=self.device)
@@ -119,7 +127,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="kitti":
-                results = validate_kitti(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
+                results = validate_kitti(model, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 3px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -127,7 +135,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-3px_error', results['thresh'], epoch_num)
 
             if stage=="eth3d":
-                results = validate_eth3d(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
+                results = validate_eth3d(model, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 1px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -135,7 +143,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="middlebury":
-                results = validate_middlebury(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
+                results = validate_middlebury(model, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 2px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -143,7 +151,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-2px_error', results['thresh'], epoch_num)
 
             if stage=="inference":
-                inference(model, device=self.device, save_outputs=True, iters_s16=1, iters_s8=8)
+                inference(model, device=self.device, save_outputs=False, iters_s16=1, iters_s8=8)
 
 
         # if self.cfg.plot_iterations_curve:

@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 from typing import Dict, Any, Optional, List
 # from datasets import build_dataset
-from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3, InferenceDataset)
+from dataloader.video_datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3, InferenceDataset)
 from dataloader import transforms
 from utils.utils import InputPadder
 from utils.stereo_metric import epe_metric, d1_metric, thres_metric
