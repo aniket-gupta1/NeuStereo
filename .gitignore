@@ -3,6 +3,7 @@ logdev/
 scripts/
 outputs/
 validation_results/
+neustereo_output/*
 outputs*
 *.pth
 *.pyc
