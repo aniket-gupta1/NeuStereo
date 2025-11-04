@@ -1,13 +1,20 @@
 import torch
 import torch.nn.functional as F
 
-from NeuStereo import backbone
-from NeuStereo import transformer
-from NeuStereo import matching
-from NeuStereo import corr
-from NeuStereo import refine
-from NeuStereo import upsample
+from NeuStereo_video import backbone
+from NeuStereo_video import transformer
+from NeuStereo_video import matching
+from NeuStereo_video import corr
+from NeuStereo_video import refine
+from NeuStereo_video import upsample
 import pdb
+
+def check_tensor(tensor, name):
+    """Checks for nan or inf in a tensor and prints a debug message."""
+    if torch.isnan(tensor).any():
+        print(f"DEBUG: 🔴 NaN found in '{name}'")
+    elif torch.isinf(tensor).any():
+        print(f"DEBUG: 🔴 Inf found in '{name}'")
 
 class NeuStereo(torch.nn.Module):
     def __init__(self, config):
@@ -65,85 +72,81 @@ class NeuStereo(torch.nn.Module):
         context, features = torch.split(features, [context_dim, feature_dim], dim=1)
 
         context, _ = context.chunk(chunks=2, dim=0)
-        # feature0, feature1 = features.chunk(chunks=2, dim=0)
-
         return features, torch.relu(context)
 
     def forward(self, img0, img1, warped_prev_disp=None, warped_prev_contexts=None, iters_s16=10, iters_s8=10):
-        # print(iters_s16, iters_s8)
         disp_list = []
         img0 /= 255.
         img1 /= 255.
-        
-        # Extract multi-scale features        
+
+        # --- DEBUG: Check inputs ---
+        check_tensor(img0, "Input img0")
+        check_tensor(img1, "Input img1")
+
         features_s16, features_s8 = self.backbone(torch.cat([img0, img1], dim=0))
+        check_tensor(features_s16, "Backbone features_s16")
+        check_tensor(features_s8, "Backbone features_s8")
         
-        # Apply Cross Attention and split features
         features_s16 = self.cross_attn_s16(features_s16)
+        check_tensor(features_s16, "Cross-Attention s16")
+
         features_s16, context_s16 = self.split_features(features_s16, self.config.context_dim_s16, self.config.feature_dim_s16)
         features_s8, context_s8 = self.split_features(features_s8, self.config.context_dim_s8, self.config.feature_dim_s8)
         feature0_s16, feature1_s16 = features_s16.chunk(chunks=2, dim=0)
 
         if warped_prev_disp is not None:
-            # Use the motion-compensated disparity from the previous frame as the initial guess
-            # Downsample it to the 1/16th scale
             disp_left = F.interpolate(warped_prev_disp, scale_factor=1./16., mode='bilinear', align_corners=True) / 16.0
         else:
-            # For the first frame, compute disparity from scratch
             disp_left = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
-        # disp_left = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
+        check_tensor(disp_left, "Initial Disparity (s16)")
 
-        # Initialize the correlation volume
         stereo_corr_pyr_s16 = self.stereo_corr_block_s16.init_corr_pyr(feature0_s16, feature1_s16)
-        if warped_prev_contexts is not None:
-            iter_context_s16 = warped_prev_contexts['s16']
-        else:
-            iter_context_s16 = self.init_iter_context_s16
+        iter_context_s16 = self.init_iter_context_s16 if warped_prev_contexts is None else warped_prev_contexts['s16']
 
-        # Refine the 1/16th scale disparity
         for i in range(iters_s16):
             if self.training and i > 0:
                 disp_left = disp_left.detach()
 
-            # Compute correlation block and Run refinement network
             stereo_corrs = self.stereo_corr_block_s16(stereo_corr_pyr_s16, disp_left)
+            check_tensor(stereo_corrs, f"s16 Refine Iter {i} - Input Corrs")
+            
             iter_context_s16, stereo_delta_disp = self.stereo_refine_s16(stereo_corrs, context_s16, iter_context_s16, disp_left)
+            check_tensor(stereo_delta_disp, f"s16 Refine Iter {i} - Delta Disp")
 
-            # Add delta disparity and Upsample for supervision
             disp_left = disp_left + stereo_delta_disp
-            if self.training:
-                up_disp_left = F.interpolate(disp_left, scale_factor=16, mode='bilinear') * 16
-                disp_list.append(up_disp_left)
+            disp_left = torch.clamp(disp_left, min=0, max=self.config.max_disp / 16.0) # Keep the clamp just in case
+            check_tensor(disp_left, f"s16 Refine Iter {i} - Updated Disp")
 
-        # Upsample 1/16th scale features and left image disparity to 1/8th scale
+            if self.training:
+                disp_list.append(F.interpolate(disp_left, scale_factor=16, mode='bilinear') * 16)
+
         disp_left = F.interpolate(disp_left, scale_factor=2, mode='nearest') * 2
         features_s16 = F.interpolate(features_s16, scale_factor=2, mode='nearest')
 
-        # Merge 1/8th and 1/16th scale features
         features_s8 = self.merge_s8(torch.cat([features_s8, features_s16], dim=1))
+        check_tensor(features_s8, "Merged Features (s8)")
         feature0_s8, feature1_s8 = features_s8.chunk(chunks=2, dim=0)
 
         context_s16 = F.interpolate(context_s16, scale_factor=2, mode='nearest')
         context_s8 = self.context_merge_s8(torch.cat([context_s8, context_s16], dim=1))
 
-        # Initialize the correlation volume
         stereo_corr_pyr_s8 = self.stereo_corr_block_s8.init_corr_pyr(feature0_s8, feature1_s8)       
-        if warped_prev_contexts is not None:
-            iter_context_s8 = warped_prev_contexts['s8']
-        else:
-            iter_context_s8 = self.init_iter_context_s8
+        iter_context_s8 = self.init_iter_context_s8 if warped_prev_contexts is None else warped_prev_contexts['s8']
 
-        # Refine the 1/8th scale disparity
         for i in range(iters_s8):
             if self.training and i > 0:
                 disp_left = disp_left.detach()
             
-            # Compute correlation block and Run refinement network
             stereo_corrs = self.stereo_corr_block_s8(stereo_corr_pyr_s8, disp_left)
-            iter_context_s8, stereo_delta_disp = self.stereo_refine_s8(stereo_corrs, context_s8, iter_context_s8, disp_left)
+            check_tensor(stereo_corrs, f"s8 Refine Iter {i} - Input Corrs")
 
-            # Add delta disparity and Upsample for supervision
+            iter_context_s8, stereo_delta_disp = self.stereo_refine_s8(stereo_corrs, context_s8, iter_context_s8, disp_left)
+            check_tensor(stereo_delta_disp, f"s8 Refine Iter {i} - Delta Disp")
+
             disp_left = disp_left + stereo_delta_disp
+            disp_left = torch.clamp(disp_left, min=0, max=self.config.max_disp / 8.0)
+            check_tensor(disp_left, f"s8 Refine Iter {i} - Updated Disp")
+            
             if self.training or i == iters_s8 - 1:
                 feature0_s1 = self.conv_s8(img0)
                 up_disp_left = self.upsample_s8(feature0_s1, disp_left) * 8

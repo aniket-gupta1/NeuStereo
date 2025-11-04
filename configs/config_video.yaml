@@ -7,19 +7,26 @@ general:
   enable_amp: false
   checkpoint_dir: checkpoints/
   lr: 0.0001
-  batch_size: 16
-  num_workers: 4
+  batch_size: 8
+  num_workers: 2
   weight_decay: 0.005
   val_freq: 1
   epochs: 500
   resume: null
   distributed: false
   save_output: false
-  stage: 'spring'
+  stage: ['spring', 'flyingthings3d', 'driving', 'monkaa', 'FSD']
   num_epochs: 100
   max_disp: 400
   val_stage: ['eth3d', 'middlebury', 'kitti']
   # val_stage: ['inference']
+  # Allowed sequence lengths used by the length-grouped sampler. If omitted,
+  # defaults will be chosen based on dataset max length (e.g. [1,3,5]).
+  allowed_sequence_lengths: [1, 3, 5]
+  # Optional probabilities for selecting a sequence length per-batch. Keys must
+  # match entries in allowed_sequence_lengths. Values do not need to sum to 1;
+  # they will be normalized. If omitted, lengths are chosen uniformly.
+  length_probs: {'1': 0.5, '3': 0.3, '5': 0.2}
 
 model:
   feature_dim_s16: 128
