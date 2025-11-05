@@ -6,7 +6,7 @@ from tqdm import tqdm
 from typing import Dict, Any, Optional, List
 # from datasets import build_dataset
 from dataloader.video_datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3, InferenceDataset)
-from dataloader import transforms
+from dataloader import video_transforms
 from utils.utils import InputPadder
 from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import pdb
@@ -182,6 +182,7 @@ DATASET_CONFIGS = {
 @torch.no_grad()
 def validate_dataset(
     model: torch.nn.Module,
+    warper: torch.nn.Module,
     dataset_name: str,
     device: str, 
     mixed_prec: bool = True, 
@@ -204,68 +205,167 @@ def validate_dataset(
     """
     # Put the model in evaluation mode
     model.eval()
+    warper.eval()
     
     # Build validation dataset
     config = DATASET_CONFIGS[dataset_name]
-    val_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    val_transform = video_transforms.Compose([
+        video_transforms.ToTensor(),
+        video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
     ])
     dataset_args = config.get('args', {})
     dataset_args['transform'] = val_transform
     val_dataset = config['class'](**dataset_args)
 
     # Assign constants and log
-    logging.info(f"Evaluating on {dataset_name.upper()}. Total images: {len(val_dataset)}")
-    val_epe, val_d1, val_thres, valid_samples = 0, 0, 0, 0
+    if dataset_name.lower() in ['middlebury', 'eth3d', 'kitti', 'things']:
+        logging.info(f"Evaluating on {dataset_name.upper()}. Total images: {len(val_dataset)}")
+    else:
+        logging.info(f"Evaluating on {dataset_name.upper()}. Total sequences: {len(val_dataset)}")
+
+    # Global metric accumulators (we store the average of each sequence)
+    all_seq_epes = []
+    all_seq_d1s = []
+    all_seq_thres = []
 
     for val_id in tqdm(range(len(val_dataset)), desc=f"Validating on {dataset_name.upper()}"):
+        # Read the video data sample
         data = val_dataset[val_id]
-        image1_inp, image2_inp, disp_gt = data['left'], data['right'], data['disp']
+
+        # Per-sequence metric accumulators
+        seq_epes = []
+        seq_d1s = []
+        seq_thres = []
         
-        # Make the valid mask
-        valid_gt = disp_gt > 0
-        if not valid_gt.any():
-            continue
-
-        # Convert inputs to half precision and pad the images. 
-        image1 = image1_inp.half()
-        image2 = image2_inp.half()
-        image1 = image1[None].to(device)
-        image2 = image2[None].to(device)
-        padder = InputPadder(image1.shape, divis_by=32)
-        image1, image2 = padder.pad(image1, image2)
-
-        # Intialize model parameters
-        model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
-
-        # Inference
-        with torch.no_grad(), torch.amp.autocast('cuda', enabled=mixed_prec):
-            results = model(image1, image2, **model_kwargs)
-       
-        disp_pred = results[-1] # Shape [1, H, W]
-        disp_pred = padder.unpad(disp_pred)[0].squeeze(0).cpu() # Shape [H, W]
-        assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
-
-        # Save the outputs
-        if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, disp_gt, disp_pred, val_id, dataset_name)
-
-        # Compute Metrics
-        epe = F.l1_loss(disp_gt[valid_gt], disp_pred[valid_gt], reduction='mean')
-        d1 = d1_metric(disp_pred, disp_gt, valid_gt)
-        thres = thres_metric(disp_pred, disp_gt, valid_gt, config['epe_threshold'])
+        # Temporal state variables
+        prev_pose = None
+        prev_disp_pred = None
+        prev_contexts = None
         
-        valid_samples += 1
-        val_epe += epe.item()
-        val_d1 += d1.item()
-        val_thres += thres.item()
+        padder = None
+        is_initialized = False
 
-    mean_epe = val_epe / valid_samples
-    mean_d1 = val_d1 / valid_samples
-    mean_thres = val_thres / valid_samples
+        # Loop over the video file
+        for timestep in range(len(data['left'])):
+            # Load data for the current frame
+            try:
+                left_inp = data['left'][timestep].to(device)
+                right_inp = data['right'][timestep].to(device)
+                disp_gt = data['disp'][timestep].to(device)
+                pose = data['pose'][timestep].to(device)
+                intrinsics = data['intrinsics'][timestep].to(device)
+                baseline = data['baseline'][timestep].to(device)
+            except Exception as e:
+                logging.error(f"Error loading data for seq {val_id}, frame {timestep}: {e}")
+                continue
+            
+            # Make the valid mask
+            valid_gt = disp_gt > 0
+            if not valid_gt.any():
+                continue
 
-    # logging.info(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
+            # Convert inputs to half precision
+            left_inp = left_inp.half()
+            right_inp = right_inp.half()
+            pose = pose.half()
+            intrinsics = intrinsics.half()
+            baseline = baseline.half()
+            
+            # --- Initialize Padder and Model State (ONCE per sequence) ---
+            if not is_initialized:
+                # Add batch dimension
+                image1_padded = left_inp[None] 
+                padder = InputPadder(image1_padded.shape, divis_by=32)
+                
+                # Get padded shape
+                padded_shape = padder.pad(image1_padded, right_inp[None])[0].shape
+                B, C, H, W = padded_shape
+                
+                # Initialize model's internal shape
+                model.init_bhwd(B, H, W, device)
+                is_initialized = True
+            # ---
+
+            # Pad inputs for this frame
+            image1, image2 = padder.pad(left_inp[None], right_inp[None])
+            
+            warped_disp = None
+            warped_contexts = None
+
+            with torch.no_grad(), torch.amp.autocast('cuda', enabled=mixed_prec):
+                # --- Warping Step (like in train loop) ---
+                if timestep > 0:
+                    relative_pose = pose @ torch.linalg.inv(prev_pose)
+                    warped_contexts = warper(
+                        prev_disp_pred,   # Detached from t-1
+                        prev_contexts['s8'],  # Detached from t-1
+                        prev_contexts['s16'], # Detached from t-1
+                        relative_pose, 
+                        intrinsics[None], # Add batch dim
+                        baseline[None]  # Add batch dim
+                    )
+
+                # --- Inference Step ---
+                disp_preds, contexts = model(
+                    image1, 
+                    image2, 
+                    warped_prev_disp=warped_disp,
+                    warped_prev_contexts=warped_contexts,
+                    **model_kwargs
+                )
+        
+                disp_pred_padded = disp_preds[-1] # Shape [1, 1, H_pad, W_pad]
+
+                # --- State Update Step (like in train loop) ---
+                prev_pose = pose
+                current_disp_pred_clamped = torch.clamp(disp_pred_padded, min=0.1)
+                prev_disp_pred = current_disp_pred_clamped.detach()
+                prev_contexts = {k: v.detach() for k, v in contexts.items()} # Assuming contexts are 2nd return val
+                # ---
+
+            # Unpad the prediction
+            disp_pred = padder.unpad(disp_pred_padded)[0].squeeze(0).cpu() # Shape [H_orig, W_orig]
+            disp_gt = disp_gt.cpu()
+            valid_gt = valid_gt.cpu()
+            assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
+
+            # Save the outputs
+            if save_outputs:
+                left_inp_rgb = left_inp.permute(1,2,0) if left_inp.shape[0] == 3 else left_inp.squeeze()
+                right_inp_rgb = right_inp.permute(1,2,0) if right_inp.shape[0] == 3 else right_inp.squeeze()
+                save_outputs_func(left_inp_rgb, right_inp_rgb, disp_gt, disp_pred, val_id, dataset_name)
+
+            # Compute and accumulate metrics for this frame
+            seq_epes.append(F.l1_loss(disp_gt[valid_gt], disp_pred[valid_gt], reduction='mean').item())
+            seq_d1s.append(d1_metric(disp_pred, disp_gt, valid_gt).item())
+            seq_thres.append(thres_metric(disp_pred, disp_gt, valid_gt, config['epe_threshold']).item())
+            
+        # --- End of Timestep Loop ---
+        
+        # Calculate and log metrics for the sequence
+        if len(seq_epes) > 0:
+            mean_seq_epe = np.mean(seq_epes)
+            mean_seq_d1 = np.mean(seq_d1s)
+            mean_seq_thres = np.mean(seq_thres)
+            
+            # logging.info(f"  Sequence {val_id:03d} ({len(seq_epes)} frames): "
+            #             f"EPE: {mean_seq_epe:7.3f}, "
+            #             f"D1: {mean_seq_d1*100:3.2f}, "
+            #             f"{config['epe_threshold']}px: {mean_seq_thres*100:3.2f}")
+            
+            all_seq_epes.append(mean_seq_epe)
+            all_seq_d1s.append(mean_seq_d1)
+            all_seq_thres.append(mean_seq_thres)
+        else:
+            logging.warning(f"  Sequence {val_id:03d}: No valid frames found, skipping.")
+        
+    # --- End of Sequence Loop ---
+
+    # Calculate global averages
+    mean_epe = np.mean(all_seq_epes) if len(all_seq_epes) > 0 else 0
+    mean_d1 = np.mean(all_seq_d1s) if len(all_seq_d1s) > 0 else 0
+    mean_thres = np.mean(all_seq_thres) if len(all_seq_thres) > 0 else 0
+
     return {'epe': mean_epe, 'd1': mean_d1*100, 'thresh': mean_thres*100}
 
 
@@ -294,9 +394,9 @@ def inference_realworld(
     model.eval()
     
     # Build validation dataset
-    val_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    val_transform = video_transforms.Compose([
+        video_transforms.ToTensor(),
+        video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ])
     # val_dataset = InferenceDataset(data_dir="/projects/nufr/aniket/Datasets/Shapely_hills/rectified_data/", transform=val_transform)
     # val_dataset = InferenceDataset(data_dir="/projects/nufr/aniket/Datasets/EXP_rectified/", transform=val_transform)
@@ -337,25 +437,25 @@ def inference_realworld(
 
 # --- Simplified Validation Functions (API) ---
 
-def validate_eth3d(model, device, **kwargs):
+def validate_eth3d(model, warper, device, **kwargs):
     """Perform validation on the ETH3D dataset."""
-    return validate_dataset(model, 'eth3d', device, **kwargs)
+    return validate_dataset(model, warper, 'eth3d', device, **kwargs)
 
-def validate_kitti(model, device, **kwargs):
+def validate_kitti(model, warper, device, **kwargs):
     """Perform validation on the KITTI-2015 dataset."""
-    return validate_dataset(model, 'kitti', device, **kwargs)
+    return validate_dataset(model, warper, 'kitti', device, **kwargs)
 
-def validate_middlebury(model, device, **kwargs):
+def validate_middlebury(model, warper, device, **kwargs):
     """Perform validation on the Middlebury-V3 dataset."""
-    return validate_dataset(model, 'middlebury', device, **kwargs)
+    return validate_dataset(model, warper, 'middlebury', device, **kwargs)
 
-def validate_things(model, device, **kwargs):
+def validate_things(model, warper, device, **kwargs):
     """Perform validation on the FlyingThings3D dataset."""
-    return validate_dataset(model, 'things', device, **kwargs)
+    return validate_dataset(model, warper, 'things', device, **kwargs)
 
-def inference(model, device, **kwargs):
+def inference(model, warper, device, **kwargs):
     """Run inference on real world dataset"""
-    return inference_realworld(model, device, **kwargs)
+    return inference_realworld(model, warper, device, **kwargs)
 
 
 def plot_iterations_curve(

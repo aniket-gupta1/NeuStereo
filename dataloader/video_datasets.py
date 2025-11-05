@@ -24,7 +24,7 @@ class VideoStereoDataset(Dataset):
     def __init__(self,
                  transform=None,
                  sequence_length=1, # Number of frames per sample
-                 subsample_groundtruth_spring=True, # Spring provides GT at 4x superresolution
+                 subsample_groundtruth_spring=False, # Spring provides GT at 4x superresolution
                  is_middlebury_eth3d=False,
                  ):
         super(VideoStereoDataset, self).__init__()
@@ -112,9 +112,9 @@ class SpringDataset(VideoStereoDataset):
                  sequence_length=3,
                  ):
         # Initialize the parent VideoStereoDataset
-        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length)
+        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_spring=True)
         
-        baseline = 0.065 # Fixed for the whole spring dataset
+        baseline = torch.tensor(0.065) # Fixed for the whole spring dataset
 
         # --- 1. Find and Group all files by sequence ---
         seq_root = os.path.join(data_dir, mode)
@@ -193,7 +193,7 @@ class InfinigenSV(VideoStereoDataset):
                 poses_list.append(pose)
             
             # Compute baseline only once
-            baseline = np.linalg.norm(T_left[:3, 3] - T_right[:3, 3])
+            baseline = torch.tensor(np.linalg.norm(T_left[:3, 3] - T_right[:3, 3]))
 
             assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
 
@@ -263,7 +263,7 @@ class FoundationStereo(VideoStereoDataset):
 
             intrinsics_list = [torch.tensor([0.0, 0.0, 0.0, 0.0])]
             poses_list = [torch.eye(4)]
-            baseline = 0.10
+            baseline = torch.tensor(0.10)
 
             assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
 
@@ -359,7 +359,7 @@ class Monkaa(VideoStereoDataset):
                 sample['disp'] = left_path.replace(split, "disparity").replace('.png', '.pfm')
                 sample['intrinsics'] = intrinsics
                 sample['pose'] = pose
-                sample['baseline'] = 1.0
+                sample['baseline'] = torch.tensor(1.0)
 
                 sequences[seq].append(sample)
         
@@ -426,7 +426,7 @@ class Driving(VideoStereoDataset):
                         sample['disp'] = left_path.replace(split, "disparity").replace('.png', '.pfm')
                         sample['intrinsics'] = intrinsics
                         sample['pose'] = pose
-                        sample['baseline'] = 1.0
+                        sample['baseline'] = torch.tensor(1.0)
 
                         sequences[seq].append(sample)
         
@@ -485,7 +485,7 @@ class FlyingThings3D(VideoStereoDataset):
                     sample['disp'] = left_path.replace(split, "disparity").replace('.png', '.pfm')
                     sample['intrinsics'] = intrinsics
                     sample['pose'] = pose
-                    sample['baseline'] = 1.0
+                    sample['baseline'] = torch.tensor(1.0)
 
                     sequences[seq].append(sample)
         
@@ -537,7 +537,7 @@ class KITTI15(VideoStereoDataset):
 
             intrinsics_list = [torch.tensor([0.0, 0.0, 0.0, 0.0])]
             poses_list = [torch.eye(4)]
-            baseline = 0.10
+            baseline = torch.tensor(0.10)
 
             assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
 
@@ -587,7 +587,7 @@ class ETH3DStereo(VideoStereoDataset):
                 # Read the baseline
                 for line in f:
                     if line.startswith('baseline='):
-                        baseline = float(line.split('=')[1])
+                        baseline = torch.tensor(float(line.split('=')[1]))
             
             # Poses are also not required for single sequence so putting in identity
             poses_list = [torch.eye(4)]
@@ -599,7 +599,7 @@ class ETH3DStereo(VideoStereoDataset):
 
                 sample['left'] = left_path
                 sample['right'] = left_path.replace("im0", "im1")
-                sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm")
+                sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm").replace("two_view_training", "two_view_training_gt")
                 sample['intrinsics'] = intrinsics
                 sample['pose'] = pose
                 sample['baseline'] = baseline
@@ -641,7 +641,7 @@ class MiddleburyEval3(VideoStereoDataset):
                 # Read the baseline
                 for line in f:
                     if line.startswith('baseline='):
-                        baseline = float(line.split('=')[1])
+                        baseline = torch.tensor(float(line.split('=')[1]))
             
             # Poses are also not required for single sequence so putting in identity
             poses_list = [torch.eye(4)]
