@@ -50,31 +50,22 @@ def get_args_parser():
     return parser
 
 def setup_dataloaders(cfg, args, logger):
-    train_dataset_list = []
-   
-    train_dataset = build_dataset(cfg)
-    # for stage in cfg.stage:
-    #     config = load_config(f"configs/dataset/{stage}.yaml")
-    #     train_dataset_i = build_dataset(stage)
-
-    #     if train_dataset is None:
-    #         train_dataset = train_dataset_i
-    #     else:
-    #         train_dataset += train_dataset_i
-
-    #     if args.local_rank == 0:
-    #         logger.info(f'Number of training samples in {stage}: {len(train_dataset_i)}')
+    args.stage = cfg.stage
+    train_dataset = build_dataset(args)
 
     if args.local_rank == 0:
-        logger.info(f"Total training samples: {len(train_dataset)}")
-    
-    # If using distributed, we need to intialize distributed sampler
+        if isinstance(cfg.stage, list):
+            for stage in cfg.stage:
+                logger.info(f"Number of training samples in {stage}: {len(train_dataset.datasets[cfg.stage.index(stage)])}")
+        else:
+            logger.info(f"Total training samples: {len(train_dataset)}")
+
     if args.distributed:
         if torch.distributed.is_available():
             initialized = torch.distributed.is_initialized()
         else:
             initialized = False
-        
+
         if initialized:
             rank = torch.distributed.get_rank()
             world_size = torch.distributed.get_world_size()
@@ -90,9 +81,7 @@ def setup_dataloaders(cfg, args, logger):
     else:
         train_sampler = None
 
-    # Initialize the dataloader
     shuffle = False if args.distributed else True
-    # shuffle = False 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
