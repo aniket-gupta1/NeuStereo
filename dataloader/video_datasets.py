@@ -30,7 +30,7 @@ class VideoStereoDataset(Dataset):
         super(VideoStereoDataset, self).__init__()
         self.transform = transform
         self.sequence_length = sequence_length
-        self.subsample_groundtruth_spring = subsample_groundtruth_spring
+        self.subsample_groundtruth_2x = subsample_groundtruth_2x
         
         # self.samples will be a list of lists. 
         # Each inner list contains dicts of file paths for one full video sequence.
@@ -60,8 +60,8 @@ class VideoStereoDataset(Dataset):
             if 'disp' in frame_paths and frame_paths['disp'] is not None:
                 disp = read_disp(frame_paths['disp'])
                 if disp is not None:
-                    assert (disp >= 0).all(), f"Negative disparity found in {frame_paths['disp']}"
-                    if self.subsample_groundtruth_spring:
+                    assert np.all((disp >= 0) | np.isnan(disp)), f"Negative disparity found in {frame_paths['disp']}"
+                    if self.subsample_groundtruth_2x:
                         disp = disp[::2,::2]
             disparities.append(disp)
 
