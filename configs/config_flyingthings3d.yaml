@@ -1,0 +1,31 @@
+general: 
+  logdir: logs/
+  exp_name: flyingthings3d_experiment
+  TIMEIT: false
+  dev: false
+  skip: 1
+  enable_amp: false
+  checkpoint_dir: checkpoints/
+  lr: 0.0001
+  batch_size: 16
+  num_workers: 4
+  weight_decay: 0.005
+  val_freq: 1
+  epochs: 500
+  resume: null
+  distributed: false
+  save_output: false
+  stage: 'flyingthings3d'
+  num_epochs: 100
+  max_disp: 400
+  val_stage: ['eth3d', 'middlebury', 'kitti']
+
+model:
+  feature_dim_s16: 128
+  context_dim_s16: 64
+  iter_context_dim_s16: 64
+  feature_dim_s8: 128
+  context_dim_s8: 64
+  iter_context_dim_s8: 64
+  feature_dim_s1: 128
+  upsample_method: "raft"
