@@ -169,7 +169,7 @@ class InfinigenSV(VideoStereoDataset):
                  data_dir='/projects/NEUFR/data/Infinigen',
                  mode="train",
                  transform=None,
-                 sequence_length=1,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
         super(InfinigenSV, self).__init__(transform=transform, sequence_length=sequence_length)
@@ -179,20 +179,48 @@ class InfinigenSV(VideoStereoDataset):
         sequences = defaultdict(list)
         for seq in os.listdir(seq_root):
             all_left_files = sorted(glob(os.path.join(seq_root, seq, 'frames/Image/camera_0', '*.png')))
+            all_camera_data_path_left = sorted(glob(os.path.join(seq_root, seq, 'frames/camview/camera_0', '*.npz')))
             
-            # Get the intrinsics and poses
-            all_camera_data_path_left = sorted(glob(os.path.join(seq_root, seq, 'frames/camview/camera_0' "*.npz")))
+            if len(all_camera_data_path_left) == 0:
+                print(f"Warning: No camera data found in {os.path.join(seq_root, seq, 'frames/camview/camera_0')}")
+                continue
+            
+            # Compute baseline once from first frame
+            try:
+                first_data_left = np.load(all_camera_data_path_left[0])
+                # Get corresponding right camera file by replacing last char before .npz
+                first_right_path = all_camera_data_path_left[0].replace('_0.npz', '_1.npz')
+                
+                # If that doesn't exist, try finding it directly
+                if not os.path.exists(first_right_path):
+                    right_dir = os.path.dirname(all_camera_data_path_left[0]).replace('camera_0', 'camera_1')
+                    right_files = sorted(glob(os.path.join(right_dir, '*.npz')))
+                    if len(right_files) == 0:
+                        raise FileNotFoundError(f"No camera 1 data found in {right_dir}")
+                    first_right_path = right_files[0]
+                
+                first_data_right = np.load(first_right_path)
+                T_left = first_data_left['T']
+                T_right = first_data_right['T']
+                baseline = torch.tensor(np.linalg.norm(T_left[:3, 3] - T_right[:3, 3]))
+            except Exception as e:
+                print(f"Error loading camera data for sequence {seq}: {str(e)}")
+                continue
+                
             intrinsics_list = []
             poses_list = []
             for intrinsics_path in all_camera_data_path_left:
                 data_left = np.load(intrinsics_path)
-                data_right = np.load(intrinsics_path.replace('camera_0', 'camera_1'))
                 K = data_left['K']
                 T_left = data_left['T']
-                T_right = data_right['T']
+                
+                # Ensure pose is correctly formatted as a 4x4 transformation matrix
+                pose = torch.eye(4)
+                pose[:3, :3] = torch.from_numpy(T_left[:3, :3])  # Rotation
+                pose[:3, 3] = torch.from_numpy(T_left[:3, 3])    # Translation
+                
                 intrinsics = torch.tensor([K[0,0], K[1,1], K[0,2], K[1,2]])
                 intrinsics_list.append(intrinsics)
-                pose = torch.tensor(T_left)
                 poses_list.append(pose)
             
             # Compute baseline only once
@@ -203,8 +231,11 @@ class InfinigenSV(VideoStereoDataset):
             for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
                 sample = {}
 
+                # Fix the right image path by replacing camera directory, not file suffix
+                right_path = left_path.replace('/camera_0/', '/camera_1/')
+                right_path = right_path.replace('_0.png', '_1.png')
                 sample['left'] = left_path
-                sample['right'] = left_path.replace("camera_0", "camera_1")
+                sample['right'] = right_path
                 sample['disp'] = left_path.replace("Image", "Disparity").replace(".png", ".npy")
                 sample['intrinsics'] = intrinsics
                 sample['pose'] = pose
@@ -326,13 +357,13 @@ class Monkaa(VideoStereoDataset):
                  data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Monkaa',
                  split='frames_finalpass',
                  transform=None,
-                 sequence_length=1,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
         super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For Monkaa, the intrinsics are same for the entire dataset
-        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
 
         # --- 1. Find and Group all files by sequence ---
         sequences = defaultdict(list)
@@ -348,7 +379,7 @@ class Monkaa(VideoStereoDataset):
             with open(os.path.join(data_dir, 'camera_data', seq, "camera_data.txt")) as f:
                 for row in f:
                     if row.startswith('L'):
-                        pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
+                        pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                         pose4x4 = pose1x16.reshape(4,4)
                         poses_list.append(pose4x4)
 
@@ -376,7 +407,7 @@ class Monkaa(VideoStereoDataset):
         self.build_valid_starts()
 
         print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
-    
+
 class Driving(VideoStereoDataset):
     def __init__(self,
                  data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Driving',
@@ -388,8 +419,8 @@ class Driving(VideoStereoDataset):
         super(Driving, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics_35 = [1050.0, 1050.0, 479.5, 269.5]
-        intrinsics_15 = [450.0, 450.0, 479.5, 269.5]
+        intrinsics_35 = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
+        intrinsics_15 = torch.tensor([450.0, 450.0, 479.5, 269.5])
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['15mm_focallength', '35mm_focallength']
@@ -415,7 +446,7 @@ class Driving(VideoStereoDataset):
                     with open(os.path.join(data_dir, 'camera_data', subset, direction, seq, "camera_data.txt")) as f:
                         for row in f:
                             if row.startswith('L'):
-                                pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
+                                pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                                 pose4x4 = pose1x16.reshape(4,4)
                                 poses_list.append(pose4x4)
 
@@ -450,13 +481,13 @@ class FlyingThings3D(VideoStereoDataset):
                  mode="train",
                  split='frames_finalpass',
                  transform=None,
-                 sequence_length=1,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
         super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['A', 'B', 'C']
@@ -474,7 +505,7 @@ class FlyingThings3D(VideoStereoDataset):
                 with open(os.path.join(data_dir, 'camera_data', mode, subset, seq, "camera_data.txt")) as f:
                     for row in f:
                         if row.startswith('L'):
-                            pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
+                            pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                             pose4x4 = pose1x16.reshape(4,4)
                             poses_list.append(pose4x4)
 
@@ -678,22 +709,42 @@ class MiddleburyEval3(VideoStereoDataset):
 
 
 def build_dataset(args):
+    train_transform_list = [
+        video_transforms.RandomScale(crop_width=768),
+        video_transforms.RandomCrop(384, 768),
+        video_transforms.RandomColor(),
+        video_transforms.RandomVerticalFlip(),
+        video_transforms.ToTensor(),
+        video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ]
+    train_transform = video_transforms.Compose(train_transform_list)
 
-    if args.stage == 'spring':
-        train_transform_list = [video_transforms.RandomScale(crop_width=768),
-                                video_transforms.RandomCrop(384, 768),
-                                video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
-                                video_transforms.ToTensor(),
-                                video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-                                ]
+    if isinstance(args.stage, str):
+        args.stage = [args.stage]  # Ensure stage is a list
 
-        train_transform = video_transforms.Compose(train_transform_list)
-        spring = SpringDataset(transform=train_transform)
-        train_dataset = spring
+    datasets = []
+    for stage in args.stage:
+        if stage == 'spring':
+            datasets.append(SpringDataset(transform=train_transform))
+        elif stage == 'flyingthings3d':
+            datasets.append(FlyingThings3D(transform=train_transform))
+        elif stage == 'monkaa':
+            datasets.append(Monkaa(transform=train_transform))
+        elif stage == 'driving':
+            datasets.append(Driving(transform=train_transform))
+        elif stage == 'infinigen':
+            datasets.append(InfinigenSV(transform=train_transform))
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
 
-        return train_dataset
-    
+    if len(datasets) == 0:
+        raise ValueError("No valid datasets found for the provided stages.")
+
+    if len(datasets) == 1:
+        return datasets[0]  # Return single dataset if only one stage
+
+    return torch.utils.data.ConcatDataset(datasets)  # Concatenate multiple datasets
+
 if __name__=="__main__":
     train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
