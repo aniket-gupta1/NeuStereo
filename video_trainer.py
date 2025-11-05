@@ -120,9 +120,14 @@ class Trainer():
                         with torch.no_grad():
                             # Compute relative pose
                             relative_pose = pose @ torch.linalg.inv(prev_pose)
+                            end_event.record()
+                            torch.cuda.synchronize()
 
-                            # start_event = torch.cuda.Event(enable_timing=True)
-                            # end_event = torch.cuda.Event(enable_timing=True)
+                            elapsed_ms = start_event.elapsed_time(end_event)
+                            print(f"Inversion + matmul took {elapsed_ms:.3f} ms")
+
+                            start_event = torch.cuda.Event(enable_timing=True)
+                            end_event = torch.cuda.Event(enable_timing=True)
 
                             # torch.cuda.synchronize()
                             # start_event.record()
