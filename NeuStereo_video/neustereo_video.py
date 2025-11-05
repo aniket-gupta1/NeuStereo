@@ -89,7 +89,6 @@ class NeuStereo(torch.nn.Module):
             # Downsample it to the 1/16th scale
             disp_left = F.interpolate(warped_prev_disp, scale_factor=1./16., mode='bilinear', align_corners=True) / 16.0
         else:
-            # For the first frame, compute disparity from scratch
             disp_left = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
         # disp_left = self.matching_s16.stereo_correlation_softmax(feature0_s16, feature1_s16)
 

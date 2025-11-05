@@ -6,7 +6,7 @@ from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import os
 import pdb
 import torch.nn.functional as F
-from NeuStereo_video.softmax_warp_optimized import SoftmaxWarper
+from NeuStereo_video.softmax_warp_nodisp import SoftmaxWarper
 from sanity_check import plot_video_stereo_debug
 import time
 
@@ -118,28 +118,26 @@ class Trainer():
                     
                     if timestep > 0:
                         with torch.no_grad():
-                            start_event = torch.cuda.Event(enable_timing=True)
-                            end_event = torch.cuda.Event(enable_timing=True)
-
-                            torch.cuda.synchronize()
-                            start_event.record()
-
                             # Compute relative pose
                             relative_pose = pose @ torch.linalg.inv(prev_pose)
-                            end_event.record()
-                            torch.cuda.synchronize()
 
-                            elapsed_ms = start_event.elapsed_time(end_event)
-                            print(f"Inversion + matmul took {elapsed_ms:.3f} ms")
+                            # start_event = torch.cuda.Event(enable_timing=True)
+                            # end_event = torch.cuda.Event(enable_timing=True)
 
-                            start_event = torch.cuda.Event(enable_timing=True)
-                            end_event = torch.cuda.Event(enable_timing=True)
-
-                            torch.cuda.synchronize()
-                            start_event.record()
+                            # torch.cuda.synchronize()
+                            # start_event.record()
                             # Warp disparity and context
                             # Use the detached state variables
-                            warped_contexts, warped_disp = self.warper(
+                            # warped_contexts, warped_disp = self.warper(
+                            #     prev_disp_pred,   # Detached from t-1
+                            #     prev_contexts['s8'],  # Detached from t-1
+                            #     prev_contexts['s16'], # Detached from t-1
+                            #     relative_pose, 
+                            #     intrinsics, 
+                            #     baseline
+                            # )
+                            
+                            warped_contexts = self.warper(
                                 prev_disp_pred,   # Detached from t-1
                                 prev_contexts['s8'],  # Detached from t-1
                                 prev_contexts['s16'], # Detached from t-1
@@ -148,11 +146,11 @@ class Trainer():
                                 baseline
                             )
 
-                            end_event.record()
-                            torch.cuda.synchronize()
+                            # end_event.record()
+                            # torch.cuda.synchronize()
 
-                            elapsed_ms = start_event.elapsed_time(end_event)
-                            print(f"warping took {elapsed_ms:.3f} ms")
+                            # elapsed_ms = start_event.elapsed_time(end_event)
+                            # print(f"warping took {elapsed_ms:.3f} ms")
 
                     # Run forward pass (now unified)
                     disp_preds, contexts = model(
@@ -206,7 +204,7 @@ class Trainer():
     
         for stage in self.cfg.val_stage:
             if stage=="flyingthings":
-                results = validate_things(model, device=self.device)
+                results = validate_things(model, self.warper, device=self.device)
                 if self.args.local_rank == 0:
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 1px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -214,7 +212,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="kitti":
-                results = validate_kitti(model, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
+                results = validate_kitti(model, self.warper, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 3px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -222,7 +220,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-3px_error', results['thresh'], epoch_num)
 
             if stage=="eth3d":
-                results = validate_eth3d(model, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
+                results = validate_eth3d(model, self.warper, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 1px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -230,7 +228,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-1px_error', results['thresh'], epoch_num)
 
             if stage=="middlebury":
-                results = validate_middlebury(model, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
+                results = validate_middlebury(model, self.warper, device=self.device, save_outputs=False, iters_s16=iters_s16, iters_s8=iters_s8)
                 if self.args.local_rank == 0:    
                     self.logger.info(f"For {stage}: EPE: {results['epe']:7.3f} || d1: {results['d1']:3.2f} || 2px error: {results['thresh']:3.2f}")
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-EPE', results['epe'], epoch_num)
@@ -238,7 +236,7 @@ class Trainer():
                     self.tensorboard_writer.add_scalar(f'Val/{stage}-2px_error', results['thresh'], epoch_num)
 
             if stage=="inference":
-                inference(model, device=self.device, save_outputs=False, iters_s16=1, iters_s8=8)
+                inference(model, self.warper, device=self.device, save_outputs=False, iters_s16=1, iters_s8=8)
 
 
         # if self.cfg.plot_iterations_curve:
