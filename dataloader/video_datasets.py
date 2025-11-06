@@ -24,7 +24,7 @@ class VideoStereoDataset(Dataset):
     def __init__(self,
                  transform=None,
                  sequence_length=1, # Number of frames per sample
-                 subsample_groundtruth_spring=False, # Spring provides GT at 4x (2x * 2x) superresolution
+                 subsample_groundtruth_spring=False, # Spring provides GT at 4x superresolution
                  is_middlebury_eth3d=False,
                  is_FSD=False,
                  ):
@@ -34,12 +34,12 @@ class VideoStereoDataset(Dataset):
         self.subsample_groundtruth_spring = subsample_groundtruth_spring
         self.is_FSD = is_FSD
         self.is_middlebury_eth3d = is_middlebury_eth3d
-        
+
         # self.samples will be a list of lists. 
         # Each inner list contains dicts of file paths for one full video sequence.
         # e.g., [ [seq1_frame0_paths, seq1_frame1_paths, ...], [seq2_frame0_paths, ...] ]
         self.samples = []
-        
+
         # self.valid_starts will be a list of tuples (sequence_index, frame_index)
         # indicating all valid starting points for a clip.
         self.valid_starts = []
@@ -47,7 +47,7 @@ class VideoStereoDataset(Dataset):
     def __getitem__(self, index):
         # Get the start of the clip
         seq_idx, frame_idx = self.valid_starts[index]
-        
+
         # Get the file paths for the entire clip
         clip_paths = self.samples[seq_idx][frame_idx : frame_idx + self.sequence_length]
 
@@ -58,7 +58,7 @@ class VideoStereoDataset(Dataset):
             # Load images and disparity
             left_images.append(read_img(frame_paths['left']))
             right_images.append(read_img(frame_paths['right']))
-            
+
             if 'disp' in frame_paths:
                 disp = read_disp(frame_paths['disp'],
                                 FSD = self.is_FSD)
@@ -101,7 +101,7 @@ class VideoStereoDataset(Dataset):
 
     def __len__(self):
         return len(self.valid_starts)
-        
+
     def build_valid_starts(self):
         """Populates the list of valid starting indices."""
         self.valid_starts = []
@@ -117,11 +117,11 @@ class SpringDataset(VideoStereoDataset):
                  data_dir='/projects/NEUFR/data/Spring',
                  mode="train",
                  transform=None,
-                 sequence_length=2,
+                 sequence_length=3,
                  ):
         # Initialize the parent VideoStereoDataset
         super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_spring=True)
-        
+
         baseline = torch.tensor(0.065) # Fixed for the whole spring dataset
 
         # --- 1. Find and Group all files by sequence ---
@@ -135,7 +135,7 @@ class SpringDataset(VideoStereoDataset):
                 for row in f:
                     intrinsics = [float(x) for x in row.split(" ")]
                     intrinsics_list.append(intrinsics)
-            
+
             poses_list = []
             with open(os.path.join(seq_root, seq, "cam_data", "extrinsics.txt")) as f:
                 for row in f:
@@ -157,13 +157,13 @@ class SpringDataset(VideoStereoDataset):
 
                 sequences[seq].append(sample)
 
-        
+
         # --- 2. Populate self.samples with the grouped sequences ---
         # Sort by sequence ID to ensure deterministic order
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -174,7 +174,7 @@ class InfinigenSV(VideoStereoDataset):
                  data_dir='/projects/NEUFR/data/Infinigen',
                  mode="train",
                  transform=None,
-                 sequence_length=2,
+                 sequence_length=1,
                  ):
         # Initialize the parent VideoStereoDataset
         super(InfinigenSV, self).__init__(transform=transform, sequence_length=sequence_length)
@@ -184,7 +184,7 @@ class InfinigenSV(VideoStereoDataset):
         sequences = defaultdict(list)
         for seq in os.listdir(seq_root):
             all_left_files = sorted(glob(os.path.join(seq_root, seq, 'frames/Image/camera_0', '*.png')))
-            
+
             # Get the intrinsics and poses
             all_camera_data_path_left = sorted(glob(os.path.join(seq_root, seq, 'frames/camview/camera_0', "*.npz")))
             intrinsics_list = []
@@ -197,8 +197,9 @@ class InfinigenSV(VideoStereoDataset):
                 T_right = data_right['T']
                 intrinsics = [K[0,0], K[1,1], K[0,2], K[1,2]]
                 intrinsics_list.append(intrinsics)
+                pose = torch.tensor(T_left)
                 poses_list.append(pose)
-            
+
             # Compute baseline only once
             baseline = torch.tensor(np.linalg.norm(T_left[:3, 3] - T_right[:3, 3]))
 
@@ -207,9 +208,6 @@ class InfinigenSV(VideoStereoDataset):
             for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
                 sample = {}
 
-                # Fix the right image path by replacing camera directory, not file suffix
-                right_path = left_path.replace('/camera_0/', '/camera_1/')
-                right_path = right_path.replace('_0.png', '_1.png')
                 sample['left'] = left_path
                 sample['right'] = left_path.replace("camera_0", "camera_1").replace("0.png", "1.png")
                 sample['disp'] = left_path.replace("Image", "Disparity").replace(".png", ".npy")
@@ -224,7 +222,7 @@ class InfinigenSV(VideoStereoDataset):
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -294,18 +292,18 @@ class FoundationStereo(VideoStereoDataset):
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
         print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
-        
+
     def load_from_cache(self, cache_file, cache_params):
         # logging.info(f"Loading dataset from cache: {cache_file}")
         try:
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
-            
+
             # Check if cache parameters match
             if cached_data.get('parameters') == cache_params:
                 # Load the cached lists directly
@@ -333,13 +331,13 @@ class Monkaa(VideoStereoDataset):
                  data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Monkaa',
                  split='frames_finalpass',
                  transform=None,
-                 sequence_length=2,
+                 sequence_length=1,
                  ):
         # Initialize the parent VideoStereoDataset
         super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For Monkaa, the intrinsics are same for the entire dataset
-        intrinsics = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
+        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
 
         # --- 1. Find and Group all files by sequence ---
         sequences = defaultdict(list)
@@ -356,12 +354,11 @@ class Monkaa(VideoStereoDataset):
                 for row in f:
                     if row.startswith('L'):
                         pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
-                        pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                         pose4x4 = pose1x16.reshape(4,4)
                         poses_list.append(pose4x4)
 
             assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), f"Lengths: left={len(all_left_files)}, intr={len(intrinsics_list)}, poses={len(poses_list)}"
-        
+
             for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
                 sample = {}
 
@@ -373,13 +370,13 @@ class Monkaa(VideoStereoDataset):
                 sample['baseline'] = torch.tensor(1.0)
 
                 sequences[seq].append(sample)
-        
+
         # --- 2. Populate self.samples with the grouped sequences ---
         # Sort by sequence ID to ensure deterministic order
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -396,8 +393,8 @@ class Driving(VideoStereoDataset):
         super(Driving, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics_35 = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
-        intrinsics_15 = torch.tensor([450.0, 450.0, 479.5, 269.5])
+        intrinsics_35 = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics_15 = [450.0, 450.0, 479.5, 269.5]
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['15mm_focallength', '35mm_focallength']
@@ -424,12 +421,11 @@ class Driving(VideoStereoDataset):
                         for row in f:
                             if row.startswith('L'):
                                 pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
-                                pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                                 pose4x4 = pose1x16.reshape(4,4)
                                 poses_list.append(pose4x4)
 
                     assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), f"Lengths: left={len(all_left_files)}, intr={len(intrinsics_list)}, poses={len(poses_list)}"
-                
+
                     for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
                         sample = {}
 
@@ -441,13 +437,13 @@ class Driving(VideoStereoDataset):
                         sample['baseline'] = torch.tensor(1.0)
 
                         sequences[seq].append(sample)
-        
+
         # --- 2. Populate self.samples with the grouped sequences ---
         # Sort by sequence ID to ensure deterministic order
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -459,13 +455,13 @@ class FlyingThings3D(VideoStereoDataset):
                  mode="TRAIN",
                  split='frames_finalpass',
                  transform=None,
-                 sequence_length=2,
+                 sequence_length=1,
                  ):
         # Initialize the parent VideoStereoDataset
         super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
+        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['A', 'B', 'C']
@@ -504,7 +500,21 @@ class FlyingThings3D(VideoStereoDataset):
 
                 # --- B. Match Files to Poses ---
                 all_left_files = sorted(glob(os.path.join(seq_root, seq, 'left', '*.npy')))
-            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 for left_path in all_left_files:
                     try:
                         # Extract frame number from filename, e.g., ".../0006.npy" -> 6
@@ -532,13 +542,13 @@ class FlyingThings3D(VideoStereoDataset):
                         sample['baseline'] = torch.tensor(1.0)
 
                         sequences[seq].append(sample)
-        
+
         # --- 2. Populate self.samples with the grouped sequences ---
         # Sort by sequence ID to ensure deterministic order
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -596,13 +606,13 @@ class KITTI15(VideoStereoDataset):
                 sample['baseline'] = baseline
 
                 sequences[seq_id].append(sample)
-        
+
         # --- 2. Populate self.samples with the grouped sequences ---
         # Sort by sequence ID to ensure deterministic order
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -622,7 +632,7 @@ class ETH3DStereo(VideoStereoDataset):
         sequences = defaultdict(list)
         for seq in os.listdir(seq_root):
             all_left_files = [os.path.join(seq_root, seq, 'im0.png')]
-            
+
             # Intrinsics don't really matter for single sequence evaluation so putting in 0's for all
             intrinsics_list = []
             with open(os.path.join(seq_root, seq, "calib.txt")) as f:
@@ -632,7 +642,7 @@ class ETH3DStereo(VideoStereoDataset):
                 for line in f:
                     if line.startswith('baseline='):
                         baseline = torch.tensor(float(line.split('=')[1]))
-            
+
             # Poses are also not required for single sequence so putting in identity
             poses_list = [torch.eye(4)]
 
@@ -655,7 +665,7 @@ class ETH3DStereo(VideoStereoDataset):
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -676,7 +686,7 @@ class MiddleburyEval3(VideoStereoDataset):
         sequences = defaultdict(list)
         for seq in os.listdir(seq_root):
             all_left_files = [os.path.join(seq_root, seq, 'im0.png')]
-            
+
             # Intrinsics don't really matter for single sequence evaluation so putting in 0's for all
             intrinsics_list = []
             with open(os.path.join(seq_root, seq, "calib.txt")) as f:
@@ -686,7 +696,7 @@ class MiddleburyEval3(VideoStereoDataset):
                 for line in f:
                     if line.startswith('baseline='):
                         baseline = torch.tensor(float(line.split('=')[1]))
-            
+
             # Poses are also not required for single sequence so putting in identity
             poses_list = [torch.eye(4)]
 
@@ -709,7 +719,7 @@ class MiddleburyEval3(VideoStereoDataset):
         for seq_id in sorted(sequences.keys()):
             # Ensure frames within the sequence are sorted correctly (glob should handle this)
             self.samples.append(sequences[seq_id])
-            
+
         # --- 3. Build the list of valid starting points ---
         self.build_valid_starts()
 
@@ -734,7 +744,7 @@ def build_dataset(args):
         train_dataset = spring
 
         return train_dataset
-    
+
     elif args.stage == "things":
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
@@ -886,8 +896,6 @@ if __name__=="__main__":
 
     train_transform = video_transforms.Compose(train_transform_list)
     spring = SpringDataset(transform=train_transform)
-    
+
     data = spring[0]
     print(data.keys())
-
-    pdb.set_trace()
