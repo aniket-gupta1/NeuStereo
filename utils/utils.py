@@ -92,7 +92,7 @@ def prepare_logger(opt: argparse.Namespace, log_path: str = None):
 
     logger = logging.getLogger()
     logger.handlers.clear()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     # Log to output stream
     stream_handler = logging.StreamHandler()

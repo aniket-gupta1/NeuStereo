@@ -24,7 +24,7 @@ class VideoStereoDataset(Dataset):
     def __init__(self,
                  transform=None,
                  sequence_length=1, # Number of frames per sample
-                 subsample_groundtruth_spring=False, # Spring provides GT at 4x superresolution
+                 subsample_groundtruth_2x=False, # Spring provides GT at 4x (2x * 2x) superresolution
                  is_middlebury_eth3d=False,
                  is_FSD=False,
                  ):
@@ -117,10 +117,10 @@ class SpringDataset(VideoStereoDataset):
                  data_dir='/projects/NEUFR/data/Spring',
                  mode="train",
                  transform=None,
-                 sequence_length=3,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
-        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_spring=True)
+        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_2x=True)
         
         baseline = torch.tensor(0.065) # Fixed for the whole spring dataset
 
@@ -174,7 +174,7 @@ class InfinigenSV(VideoStereoDataset):
                  data_dir='/projects/NEUFR/data/Infinigen',
                  mode="train",
                  transform=None,
-                 sequence_length=1,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
         super(InfinigenSV, self).__init__(transform=transform, sequence_length=sequence_length)
@@ -197,7 +197,6 @@ class InfinigenSV(VideoStereoDataset):
                 T_right = data_right['T']
                 intrinsics = [K[0,0], K[1,1], K[0,2], K[1,2]]
                 intrinsics_list.append(intrinsics)
-                pose = torch.tensor(T_left)
                 poses_list.append(pose)
             
             # Compute baseline only once
@@ -208,6 +207,9 @@ class InfinigenSV(VideoStereoDataset):
             for left_path, intrinsics, pose in zip(all_left_files, intrinsics_list, poses_list):
                 sample = {}
 
+                # Fix the right image path by replacing camera directory, not file suffix
+                right_path = left_path.replace('/camera_0/', '/camera_1/')
+                right_path = right_path.replace('_0.png', '_1.png')
                 sample['left'] = left_path
                 sample['right'] = left_path.replace("camera_0", "camera_1").replace("0.png", "1.png")
                 sample['disp'] = left_path.replace("Image", "Disparity").replace(".png", ".npy")
@@ -331,13 +333,13 @@ class Monkaa(VideoStereoDataset):
                  data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Monkaa',
                  split='frames_finalpass',
                  transform=None,
-                 sequence_length=1,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
         super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For Monkaa, the intrinsics are same for the entire dataset
-        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
 
         # --- 1. Find and Group all files by sequence ---
         sequences = defaultdict(list)
@@ -353,6 +355,7 @@ class Monkaa(VideoStereoDataset):
             with open(os.path.join(data_dir, 'camera_data', seq, "camera_data.txt")) as f:
                 for row in f:
                     if row.startswith('L'):
+                        pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                         pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                         pose4x4 = pose1x16.reshape(4,4)
                         poses_list.append(pose4x4)
@@ -381,7 +384,7 @@ class Monkaa(VideoStereoDataset):
         self.build_valid_starts()
 
         print(f"Found {len(sequences)} sequences and {len(self.valid_starts)} valid clips of length {self.sequence_length}.")
-    
+
 class Driving(VideoStereoDataset):
     def __init__(self,
                  data_dir='/projects/nufr/aniket/Datasets/Stereo_Disp/Driving',
@@ -393,8 +396,8 @@ class Driving(VideoStereoDataset):
         super(Driving, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics_35 = [1050.0, 1050.0, 479.5, 269.5]
-        intrinsics_15 = [450.0, 450.0, 479.5, 269.5]
+        intrinsics_35 = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
+        intrinsics_15 = torch.tensor([450.0, 450.0, 479.5, 269.5])
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['15mm_focallength', '35mm_focallength']
@@ -420,6 +423,7 @@ class Driving(VideoStereoDataset):
                     with open(os.path.join(data_dir, 'camera_data', subset, direction, seq, "camera_data.txt")) as f:
                         for row in f:
                             if row.startswith('L'):
+                                pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                                 pose1x16 = torch.tensor([float(x) for x in row.split(" ")[1:]])
                                 pose4x4 = pose1x16.reshape(4,4)
                                 poses_list.append(pose4x4)
@@ -455,13 +459,13 @@ class FlyingThings3D(VideoStereoDataset):
                  mode="TRAIN",
                  split='frames_finalpass',
                  transform=None,
-                 sequence_length=1,
+                 sequence_length=2,
                  ):
         # Initialize the parent VideoStereoDataset
         super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics = torch.tensor([1050.0, 1050.0, 479.5, 269.5])
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['A', 'B', 'C']
