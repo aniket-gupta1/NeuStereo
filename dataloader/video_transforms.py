@@ -42,6 +42,9 @@ class ToTensor(object):
                 disp_frame = sample['disp'][i] # [H, W]
                 sample['disp'][i] = torch.from_numpy(disp_frame.copy())
 
+            if 'intrinsics' in sample:
+                sample['intrinsics'][i] = torch.from_numpy(sample['intrinsics'][i].copy())
+
         return sample
 
 class Normalize(object):

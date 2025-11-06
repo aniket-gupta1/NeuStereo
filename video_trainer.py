@@ -120,23 +120,8 @@ class Trainer():
                         with torch.no_grad():
                             # Compute relative pose
                             relative_pose = pose @ torch.linalg.inv(prev_pose)
+                            relative_pose = relative_pose.half()
 
-                            # start_event = torch.cuda.Event(enable_timing=True)
-                            # end_event = torch.cuda.Event(enable_timing=True)
-
-                            # torch.cuda.synchronize()
-                            # start_event.record()
-                            # Warp disparity and context
-                            # Use the detached state variables
-                            # warped_contexts, warped_disp = self.warper(
-                            #     prev_disp_pred,   # Detached from t-1
-                            #     prev_contexts['s8'],  # Detached from t-1
-                            #     prev_contexts['s16'], # Detached from t-1
-                            #     relative_pose, 
-                            #     intrinsics, 
-                            #     baseline
-                            # )
-                            
                             warped_contexts = self.warper(
                                 prev_disp_pred,   # Detached from t-1
                                 prev_contexts['s8'],  # Detached from t-1
@@ -145,12 +130,6 @@ class Trainer():
                                 intrinsics, 
                                 baseline
                             )
-
-                            # end_event.record()
-                            # torch.cuda.synchronize()
-
-                            # elapsed_ms = start_event.elapsed_time(end_event)
-                            # print(f"warping took {elapsed_ms:.3f} ms")
 
                     # Run forward pass (now unified)
                     disp_preds, contexts = model(
