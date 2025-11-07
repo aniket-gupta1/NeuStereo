@@ -98,6 +98,7 @@ def _calculate_flow_jit_dynamic(
 
     # --- 5. Calculate 2D flow field ---
     flow_field = coords_t - grid_uv
+    # flow_field = grid_uv - coords_t
     importance = disparity_scaled # Return the raw disparity
 
     return flow_field, importance
@@ -152,6 +153,19 @@ class SoftmaxWarper(nn.Module):
         cx = intrinsics[:, 2].view(B, 1, 1, 1)
         cy = intrinsics[:, 3].view(B, 1, 1, 1)
         baseline_b = baseline.view(B, 1, 1, 1)
+
+        C_conv = torch.tensor([[1,  0,  0, 0],
+                               [0, -1,  0, 0],
+                               [0,  0, -1, 0],
+                               [0,  0,  0, 1]], device=disparity_prev.device, dtype=torch.float16)
+        
+        # Expand for batch operation (B, 4, 4)
+        C_conv_batch = C_conv.unsqueeze(0).expand(B, -1, -1)
+
+        # Convert the pose: T_cv = C_conv @ T_blender @ C_conv
+        # We use batch matrix multiplication (bmm)
+        relative_pose = torch.bmm(C_conv_batch, 
+                                     torch.bmm(relative_pose, C_conv_batch))
 
         # --- 1. Warp Full-Resolution (Scale 1.0) ---
         # --- THIS IS NOW CALLED ONLY ONCE ---

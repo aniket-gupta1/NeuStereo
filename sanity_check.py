@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import pdb
+import cv2
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -66,14 +67,10 @@ def plot_video_stereo_debug(
     # pdb.set_trace()
     # Prepare all tensors for plotting using the helper function
     img_t0_l = _tensor_to_plot(left_img_t0, image=True)
-    img_t0_r = _tensor_to_plot(right_img_t0, image=True)
     disp_t0_gt = _tensor_to_plot(gt_disp_t0)
-    disp_t0_pred = _tensor_to_plot(pred_disp_t0)
 
     img_t1_l = _tensor_to_plot(left_img_t1, image=True)
-    img_t1_r = _tensor_to_plot(right_img_t1, image=True)
     disp_t1_gt = _tensor_to_plot(gt_disp_t1)
-    disp_t1_pred = _tensor_to_plot(pred_disp_t1)
     disp_t1_warped = _tensor_to_plot(warped_disp_t1)
 
     # Prepare warped features for plotting (we'll visualize the first channel of each)
@@ -85,41 +82,36 @@ def plot_video_stereo_debug(
                 warped_feats_plots[key] = _tensor_to_plot(feat_tensor[:, 0:1, :, :])
 
     # --- Create the plot layout ---
-    num_feature_plots = len(warped_feats_plots)
-    num_cols = max(5, 5 + num_feature_plots) # Accommodate the longest row
+    num_cols = 4
     num_rows = 2
     
-    fig, axes = plt.subplots(num_rows, num_cols, figsize=(num_cols * 4, num_rows * 4.2))
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=(10, 6))
     
     # --- Plot Timestep 0 (Top Row) ---
     axes[0, 0].imshow(img_t0_l); axes[0, 0].set_title("t=0 Left Image")
-    # axes[0, 1].imshow(img_t0_r); axes[0, 1].set_title("t=0 Right Image")
-    
-    im_gt0 = axes[0, 1].imshow(disp_t0_gt, cmap='viridis'); axes[0, 2].set_title("t=0 GT Disparity")
-    fig.colorbar(im_gt0, ax=axes[0, 2], orientation='horizontal', pad=0.1)
-
-    im_pred0 = axes[0, 2].imshow(disp_t0_pred, cmap='viridis'); axes[0, 3].set_title("t=0 Predicted Disp")
-    fig.colorbar(im_pred0, ax=axes[0, 3], orientation='horizontal', pad=0.1)
-
     # --- Plot Timestep 1 (Bottom Row) ---
-    axes[1, 0].imshow(img_t1_l); axes[1, 0].set_title("t=1 Left Image")
-    # axes[1, 1].imshow(img_t1_r); axes[1, 1].set_title("t=1 Right Image")
+    axes[0, 1].imshow(img_t1_l); axes[0, 1].set_title("t=1 Left Image")
+    # --- Plot Overlayed images
+    overlayed = cv2.addWeighted(img_t0_l, 0.5, img_t1_l, 0.5, 0)
+    axes[0, 2].imshow(overlayed); axes[0, 2].set_title("Overlayed Images")
+    
+    im_gt0 = axes[1, 0].imshow(disp_t0_gt, cmap='viridis'); axes[1, 0].set_title("t=0 GT Disparity")
+    fig.colorbar(im_gt0, ax=axes[1, 0], orientation='horizontal', pad=0.1)
 
-    im_gt1 = axes[1, 1].imshow(disp_t1_gt, cmap='viridis'); axes[1, 2].set_title("t=1 GT Disparity")
-    fig.colorbar(im_gt1, ax=axes[1, 2], orientation='horizontal', pad=0.1)
+    im_gt1 = axes[1, 1].imshow(disp_t1_gt, cmap='viridis'); axes[1, 1].set_title("t=1 GT Disparity")
+    fig.colorbar(im_gt1, ax=axes[1, 1], orientation='horizontal', pad=0.1)
 
-    im_pred1 = axes[1, 2].imshow(disp_t1_pred, cmap='viridis'); axes[1, 3].set_title("t=1 Predicted Disp")
-    fig.colorbar(im_pred1, ax=axes[1, 3], orientation='horizontal', pad=0.1)
+    # --- Plot Overlayed Disparity
+    overlayed_disp = cv2.addWeighted(disp_t0_gt, 0.5, disp_t1_gt, 0.5, 0)
+    axes[0, 3].imshow(overlayed_disp); axes[0, 3].set_title("Overlayed Disparities")
 
-    im_warp_d = axes[1, 3].imshow(disp_t1_warped, cmap='viridis'); axes[1, 4].set_title("t=1 Warped Prev. Disp")
-    fig.colorbar(im_warp_d, ax=axes[1, 4], orientation='horizontal', pad=0.1)
+    # Plot warped disparity and error
+    im_warp_d = axes[1, 2].imshow(disp_t1_warped, cmap='viridis'); axes[1, 2].set_title("Warped Prev. Disp")
+    fig.colorbar(im_warp_d, ax=axes[1, 2], orientation='horizontal', pad=0.1)
 
-    # # Plot warped features dynamically
-    # for i, (key, feat_plot) in enumerate(warped_feats_plots.items()):
-    #     col_idx = 5 + i
-    #     im_feat = axes[1, col_idx].imshow(feat_plot, cmap='plasma')
-    #     axes[1, col_idx].set_title(f"t=1 Warped Feat '{key}' (Ch 0)")
-    #     fig.colorbar(im_feat, ax=axes[1, col_idx], orientation='horizontal', pad=0.1)
+    error = disp_t1_gt - disp_t1_warped
+    error_img = axes[1, 3].imshow(error, cmap='viridis'); axes[1, 3].set_title("Error")
+    fig.colorbar(error_img, ax=axes[1, 3], orientation='horizontal', pad=0.1)
         
     # --- Finalize and Save ---
     for ax in axes.ravel():

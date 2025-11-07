@@ -501,20 +501,6 @@ class FlyingThings3D(VideoStereoDataset):
                 # --- B. Match Files to Poses ---
                 all_left_files = sorted(glob(os.path.join(seq_root, seq, 'left', '*.npy')))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
                 for left_path in all_left_files:
                     try:
                         # Extract frame number from filename, e.g., ".../0006.npy" -> 6
@@ -740,7 +726,7 @@ def build_dataset(args):
                                 ]
 
         train_transform = video_transforms.Compose(train_transform_list)
-        spring = SpringDataset(transform=train_transform)
+        spring = SpringDataset(transform=train_transform, sequence_length=2)
         train_dataset = spring
 
         return train_dataset

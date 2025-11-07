@@ -6,7 +6,7 @@ from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import os
 import pdb
 import torch.nn.functional as F
-from NeuStereo_video.softmax_warp_nodisp import SoftmaxWarper
+from NeuStereo_video.softmax_warp_optimized import SoftmaxWarper
 from sanity_check import plot_video_stereo_debug
 import time
 
@@ -119,11 +119,24 @@ class Trainer():
                     if timestep > 0:
                         with torch.no_grad():
                             # Compute relative pose
-                            relative_pose = pose @ torch.linalg.inv(prev_pose)
+                            # relative_pose = pose @ torch.linalg.inv(prev_pose)
+                            relative_pose = torch.linalg.inv(pose) @ prev_pose
                             relative_pose = relative_pose.half()
+                            
+                            # Convert from blender coordinate frame to opencv coord frame
+                            # relative_pose = self.M_blender_to_cv @ relative_pose @ self.M_cv_to_blender
 
-                            warped_contexts = self.warper(
-                                prev_disp_pred,   # Detached from t-1
+                            # warped_contexts = self.warper(
+                            #     prev_disp_pred,   # Detached from t-1
+                            #     prev_contexts['s8'],  # Detached from t-1
+                            #     prev_contexts['s16'], # Detached from t-1
+                            #     relative_pose, 
+                            #     intrinsics, 
+                            #     baseline
+                            # )
+
+                            warped_contexts, warped_disp = self.warper(
+                                gt_disparities[0].half(),   # Detached from t-1
                                 prev_contexts['s8'],  # Detached from t-1
                                 prev_contexts['s16'], # Detached from t-1
                                 relative_pose, 
@@ -154,6 +167,8 @@ class Trainer():
                     # 4. Detach the contexts
                     prev_contexts = {k: v.detach() for k, v in contexts.items()}
                     
+                    predicted_disparities.append(disp_preds[-1]) # Append t=1 pred
+
                     # Compute Loss
                     # We use the original disp_preds for the loss
                     loss, metrics = self.loss_func(left, right, disp_preds, disp_gt, valid, self.cfg.max_disp)
@@ -164,6 +179,27 @@ class Trainer():
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scaler.step(optimizer)
                 scaler.update()
+
+                # --- Debug/plotting code ---
+                if timestep==1:
+                    warped_disp_t1 = warped_disp
+                    warped_features_t1 = warped_contexts
+                    plot_video_stereo_debug(
+                        left_img_t0=left_images[0],
+                        right_img_t0=right_images[0],
+                        gt_disp_t0=gt_disparities[0],
+                        pred_disp_t0=predicted_disparities[0],
+                        
+                        left_img_t1=left_images[1],
+                        right_img_t1=right_images[1],
+                        gt_disp_t1=gt_disparities[1],
+                        pred_disp_t1=predicted_disparities[1],
+                        
+                        warped_disp_t1=warped_disp_t1,
+                        warped_features_t1=warped_features_t1,
+                        
+                        save_path=f"debug/infinigen/step_{step_num}_warp_check.png"
+                    )
 
             if self.args.local_rank == 0 and step_num%10==0:
                 self.logger.info(f"Epoch: {epoch_num:3d}, Step: {step_num:6d}, EPE: {metrics['epe']:7.3f}, D1: {metrics['d1']:3.2f}, 1px: {metrics['1px_error']:3.2f}, 2px: {metrics['2px_error']:3.2f}, 3px: {metrics['3px_error']:3.2f}")
