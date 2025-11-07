@@ -81,7 +81,7 @@ def setup_dataloaders(cfg, args, logger):
     else:
         train_sampler = None
 
-    shuffle = False #if args.distributed else True
+    shuffle = False if args.distributed else True
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,

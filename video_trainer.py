@@ -126,23 +126,23 @@ class Trainer():
                             # Convert from blender coordinate frame to opencv coord frame
                             # relative_pose = self.M_blender_to_cv @ relative_pose @ self.M_cv_to_blender
 
-                            # warped_contexts = self.warper(
-                            #     prev_disp_pred,   # Detached from t-1
-                            #     prev_contexts['s8'],  # Detached from t-1
-                            #     prev_contexts['s16'], # Detached from t-1
-                            #     relative_pose, 
-                            #     intrinsics, 
-                            #     baseline
-                            # )
-
-                            warped_contexts, warped_disp = self.warper(
-                                gt_disparities[0].half(),   # Detached from t-1
+                            warped_contexts = self.warper(
+                                prev_disp_pred,   # Detached from t-1
                                 prev_contexts['s8'],  # Detached from t-1
                                 prev_contexts['s16'], # Detached from t-1
                                 relative_pose, 
                                 intrinsics, 
                                 baseline
                             )
+
+                            # warped_contexts, warped_disp = self.warper(
+                            #     gt_disparities[0].half(),   # Detached from t-1
+                            #     prev_contexts['s8'],  # Detached from t-1
+                            #     prev_contexts['s16'], # Detached from t-1
+                            #     relative_pose, 
+                            #     intrinsics, 
+                            #     baseline
+                            # )
 
                     # Run forward pass (now unified)
                     disp_preds, contexts = model(
@@ -181,25 +181,25 @@ class Trainer():
                 scaler.update()
 
                 # --- Debug/plotting code ---
-                if timestep==1:
-                    warped_disp_t1 = warped_disp
-                    warped_features_t1 = warped_contexts
-                    plot_video_stereo_debug(
-                        left_img_t0=left_images[0],
-                        right_img_t0=right_images[0],
-                        gt_disp_t0=gt_disparities[0],
-                        pred_disp_t0=predicted_disparities[0],
+                # if timestep==1:
+                #     warped_disp_t1 = warped_disp
+                #     warped_features_t1 = warped_contexts
+                #     plot_video_stereo_debug(
+                #         left_img_t0=left_images[0],
+                #         right_img_t0=right_images[0],
+                #         gt_disp_t0=gt_disparities[0],
+                #         pred_disp_t0=predicted_disparities[0],
                         
-                        left_img_t1=left_images[1],
-                        right_img_t1=right_images[1],
-                        gt_disp_t1=gt_disparities[1],
-                        pred_disp_t1=predicted_disparities[1],
+                #         left_img_t1=left_images[1],
+                #         right_img_t1=right_images[1],
+                #         gt_disp_t1=gt_disparities[1],
+                #         pred_disp_t1=predicted_disparities[1],
                         
-                        warped_disp_t1=warped_disp_t1,
-                        warped_features_t1=warped_features_t1,
+                #         warped_disp_t1=warped_disp_t1,
+                #         warped_features_t1=warped_features_t1,
                         
-                        save_path=f"debug/infinigen/step_{step_num}_warp_check.png"
-                    )
+                #         save_path=f"debug/infinigen/step_{step_num}_warp_check.png"
+                #     )
 
             if self.args.local_rank == 0 and step_num%10==0:
                 self.logger.info(f"Epoch: {epoch_num:3d}, Step: {step_num:6d}, EPE: {metrics['epe']:7.3f}, D1: {metrics['d1']:3.2f}, 1px: {metrics['1px_error']:3.2f}, 2px: {metrics['2px_error']:3.2f}, 3px: {metrics['3px_error']:3.2f}")
