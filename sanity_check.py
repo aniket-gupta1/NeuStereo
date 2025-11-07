@@ -109,7 +109,7 @@ def plot_video_stereo_debug(
     im_warp_d = axes[1, 2].imshow(disp_t1_warped, cmap='viridis'); axes[1, 2].set_title("Warped Prev. Disp")
     fig.colorbar(im_warp_d, ax=axes[1, 2], orientation='horizontal', pad=0.1)
 
-    error = disp_t1_gt - disp_t1_warped
+    error = np.abs(disp_t1_gt - disp_t1_warped)
     error_img = axes[1, 3].imshow(error, cmap='viridis'); axes[1, 3].set_title("Error")
     fig.colorbar(error_img, ax=axes[1, 3], orientation='horizontal', pad=0.1)
         

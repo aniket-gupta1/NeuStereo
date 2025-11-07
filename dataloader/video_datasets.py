@@ -164,7 +164,7 @@ class SpringDataset(VideoStereoDataset):
             with open(os.path.join(seq_root, seq, "cam_data", "extrinsics.txt")) as f:
                 for row in f:
                     pose1x16 = torch.tensor([float(x) for x in row.split(" ")])
-                    pose4x4 = pose1x16.reshape(4,4)
+                    pose4x4 = np.linalg.inv(pose1x16.reshape(4,4))
                     poses_list.append(pose4x4)
 
             assert len(all_left_files)==len(intrinsics_list) and len(all_left_files)==len(poses_list), print(len(all_left_files), len(intrinsics_list), len(poses_list)) 
@@ -421,8 +421,8 @@ class Driving(VideoStereoDataset):
         super(Driving, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics_35 = [1050.0, 1050.0, 479.5, 269.5]
-        intrinsics_15 = [450.0, 450.0, 479.5, 269.5]
+        intrinsics_35 = [-1050.0, -1050.0, 479.5, 269.5]
+        intrinsics_15 = [-450.0, -450.0, 479.5, 269.5]
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['15mm_focallength', '35mm_focallength']
@@ -749,10 +749,11 @@ class MiddleburyEval3(VideoStereoDataset):
 def build_dataset(args):
 
     if args.stage == 'spring':
-        train_transform_list = [video_transforms.RandomScale(crop_width=768),
+        train_transform_list = [
+                                # video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
@@ -779,10 +780,11 @@ def build_dataset(args):
         return train_dataset
 
     elif args.stage == "driving":
-        train_transform_list = [video_transforms.RandomScale(crop_width=768),
+        train_transform_list = [
+                                # video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]

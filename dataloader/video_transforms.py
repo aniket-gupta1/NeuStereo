@@ -112,6 +112,27 @@ class RandomCrop(object):
             if 'disp' in sample:
                 sample['disp'][i] = sample['disp'][i][offset_y:offset_y + self.img_height, offset_x:offset_x + self.img_width]
 
+            # --- MODIFIED: Update Intrinsics ---
+            if 'intrinsics' in sample:
+                # [fx, fy, cx, cy]
+                
+                # 1. Account for padding
+                # Pad adds `top_pad` pixels to the top.
+                # Pad adds `0` pixels to the left.
+                # new_cx = old_cx + 0
+                # new_cy = old_cy + top_pad
+                
+                # 2. Account for crop offset
+                # The new origin is (offset_x, offset_y) in the padded space.
+                # final_cx = new_cx - offset_x
+                # final_cy = new_cy - offset_y
+                
+                # Combine:
+                # cx = cx - offset_x
+                sample['intrinsics'][i][2] = sample['intrinsics'][i][2] - offset_x
+                # cy = (cy + top_pad) - offset_y
+                sample['intrinsics'][i][3] = sample['intrinsics'][i][3] + top_pad - offset_y
+
         return sample
 
 # Random Coloring
@@ -275,11 +296,20 @@ class RandomVerticalFlip(object):
             
             # --- Apply the SAME flip to all frames ---
             for i in range(num_frames):
+                # --- MODIFIED: Get height *before* flipping ---
+                h = sample['left'][i].shape[0]
+
                 sample['left'][i] = np.copy(np.flipud(sample['left'][i]))
                 sample['right'][i] = np.copy(np.flipud(sample['right'][i]))
 
                 if 'disp' in sample:
                     sample['disp'][i] = np.copy(np.flipud(sample['disp'][i]))
+                
+                # --- MODIFIED: Update Intrinsics ---
+                if 'intrinsics' in sample:
+                    # [fx, fy, cx, cy]
+                    # new_cy = (h - 1) - old_cy
+                    sample['intrinsics'][i][3] = (h - 1) - sample['intrinsics'][i][3]
 
         return sample
     
@@ -317,5 +347,15 @@ class RandomScale(object):
                         sample['disp'][i], None, fx=scale_x, fy=1.,
                         interpolation=cv2.INTER_LINEAR if not self.nearest_interp else cv2.INTER_NEAREST
                     ) * scale_x
+
+                # --- MODIFIED: Update Intrinsics ---
+                if 'intrinsics' in sample:
+                    # [fx, fy, cx, cy]
+                    # Since only x-axis is scaled (scale_y = 1.0):
+                    # fx scales with scale_x
+                    # cx scales with scale_x
+                    # fy and cy are unchanged
+                    sample['intrinsics'][i][0] = sample['intrinsics'][i][0] * scale_x # fx
+                    sample['intrinsics'][i][2] = sample['intrinsics'][i][2] * scale_x # cx
 
         return sample
