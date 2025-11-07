@@ -27,6 +27,7 @@ class VideoStereoDataset(Dataset):
                  subsample_groundtruth_spring=False, # Spring provides GT at 4x superresolution
                  is_middlebury_eth3d=False,
                  is_FSD=False,
+                 skip_values=None,
                  ):
         super(VideoStereoDataset, self).__init__()
         self.transform = transform
@@ -34,6 +35,17 @@ class VideoStereoDataset(Dataset):
         self.subsample_groundtruth_spring = subsample_groundtruth_spring
         self.is_FSD = is_FSD
         self.is_middlebury_eth3d = is_middlebury_eth3d
+        # skip_values controls spacing between frames inside a clip.
+        # Each skip value s produces sequences where consecutive frames in
+        # the clip are separated by (s+1) indices. For example, sequence_length=2
+        # and skip=0 -> pairs (i, i+1); skip=1 -> pairs (i, i+2).
+        if skip_values is None:
+            self.skip_values = [0]
+        elif isinstance(skip_values, int):
+            self.skip_values = [skip_values]
+        else:
+            # assume iterable
+            self.skip_values = list(skip_values)
 
         # self.samples will be a list of lists. 
         # Each inner list contains dicts of file paths for one full video sequence.
@@ -45,11 +57,15 @@ class VideoStereoDataset(Dataset):
         self.valid_starts = []
 
     def __getitem__(self, index):
-        # Get the start of the clip
-        seq_idx, frame_idx = self.valid_starts[index]
+        # valid_starts now stores tuples (seq_idx, frame_idx, skip)
+        seq_idx, frame_idx, skip = self.valid_starts[index]
+
+        # Compute the indices for all frames in this clip using skip spacing
+        step = skip + 1
+        indices = [frame_idx + k * step for k in range(self.sequence_length)]
 
         # Get the file paths for the entire clip
-        clip_paths = self.samples[seq_idx][frame_idx : frame_idx + self.sequence_length]
+        clip_paths = [self.samples[seq_idx][i] for i in indices]
 
         # --- Load all data for the sequence ---
         left_images, right_images, disparities, poses, intrinsics, baselines = [], [], [], [], [], []
@@ -107,9 +123,16 @@ class VideoStereoDataset(Dataset):
         self.valid_starts = []
         for seq_idx, sequence in enumerate(self.samples):
             num_frames = len(sequence)
-            if num_frames >= self.sequence_length:
-                for frame_idx in range(num_frames - self.sequence_length + 1):
-                    self.valid_starts.append((seq_idx, frame_idx))
+            # For each skip value, compute valid starting frames such that the
+            # last frame of the sequence stays within the sequence bounds.
+            for skip in self.skip_values:
+                step = skip + 1
+                # start <= num_frames - ((sequence_length-1)*step + 1)
+                max_start_exclusive = num_frames - (self.sequence_length - 1) * step
+                if max_start_exclusive <= 0:
+                    continue
+                for frame_idx in range(max_start_exclusive):
+                    self.valid_starts.append((seq_idx, frame_idx, skip))
 
 #region: Stereo Vidio Datasets ===================================================================
 class SpringDataset(VideoStereoDataset):
@@ -118,9 +141,10 @@ class SpringDataset(VideoStereoDataset):
                  mode="train",
                  transform=None,
                  sequence_length=3,
+                 skip_values=None
                  ):
         # Initialize the parent VideoStereoDataset
-        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_spring=True)
+        super(SpringDataset, self).__init__(transform=transform, sequence_length=sequence_length, subsample_groundtruth_spring=True, skip_values=skip_values)
 
         baseline = torch.tensor(0.065) # Fixed for the whole spring dataset
 
@@ -175,9 +199,10 @@ class InfinigenSV(VideoStereoDataset):
                  mode="train",
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
         # Initialize the parent VideoStereoDataset
-        super(InfinigenSV, self).__init__(transform=transform, sequence_length=sequence_length)
+        super(InfinigenSV, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # --- 1. Find and Group all files by sequence ---
         seq_root = os.path.join(data_dir, mode)
@@ -241,9 +266,10 @@ class FoundationStereo(VideoStereoDataset):
                  use_cache=True,
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
         # Initialize the parent VideoStereoDataset
-        super(FoundationStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_FSD=True)
+        super(FoundationStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_FSD=True, skip_values=skip_values)
 
         self.data_dict = []
 
@@ -332,9 +358,10 @@ class Monkaa(VideoStereoDataset):
                  split='frames_finalpass',
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
         # Initialize the parent VideoStereoDataset
-        super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length)
+        super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # For Monkaa, the intrinsics are same for the entire dataset
         intrinsics = [1050.0, 1050.0, 479.5, 269.5]
@@ -388,9 +415,10 @@ class Driving(VideoStereoDataset):
                  split='frames_finalpass',
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
         # Initialize the parent VideoStereoDataset
-        super(Driving, self).__init__(transform=transform, sequence_length=sequence_length)
+        super(Driving, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
         intrinsics_35 = [1050.0, 1050.0, 479.5, 269.5]
@@ -456,9 +484,10 @@ class FlyingThings3D(VideoStereoDataset):
                  split='frames_finalpass',
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
         # Initialize the parent VideoStereoDataset
-        super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length)
+        super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
         intrinsics = [1050.0, 1050.0, 479.5, 269.5]
@@ -565,8 +594,9 @@ class KITTI15(VideoStereoDataset):
                  mode='training',
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
-        super(KITTI15, self).__init__(transform=transform, sequence_length=sequence_length)
+        super(KITTI15, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # --- 1. Find and Group all files by sequence ---
         # Since KITTI has no sequence organization, we'll simply read all files and put them in individual lists
@@ -610,8 +640,9 @@ class ETH3DStereo(VideoStereoDataset):
                  mode='two_view_training',
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
-        super(ETH3DStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True)
+        super(ETH3DStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True, skip_values=skip_values)
 
         # --- 1. Find and Group all files by sequence ---
         seq_root = data_dir + '/' + mode 
@@ -664,8 +695,9 @@ class MiddleburyEval3(VideoStereoDataset):
                  resolution='H',
                  transform=None,
                  sequence_length=1,
+                 skip_values=None
                  ):
-        super(MiddleburyEval3, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True)
+        super(MiddleburyEval3, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True, skip_values=skip_values)
 
         # --- 1. Find and Group all files by sequence ---
         seq_root = data_dir + '/' + mode + resolution
@@ -726,7 +758,7 @@ def build_dataset(args):
                                 ]
 
         train_transform = video_transforms.Compose(train_transform_list)
-        spring = SpringDataset(transform=train_transform, sequence_length=2)
+        spring = SpringDataset(transform=train_transform, sequence_length=2, skip_values=[20])
         train_dataset = spring
 
         return train_dataset
@@ -805,7 +837,7 @@ def build_dataset(args):
                                 ]
             
         train_transform = video_transforms.Compose(train_transform_list)
-        infinigen = InfinigenSV(transform=train_transform, sequence_length=2)
+        infinigen = InfinigenSV(transform=train_transform, sequence_length=2, skip_values=[20])
         train_dataset = infinigen
 
         return train_dataset

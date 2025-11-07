@@ -12,6 +12,8 @@ import coloredlogs
 import shutil
 
 import yaml
+import bisect
+from collections import defaultdict
 
 class InputPadder:
     """ Pads images such that dimensions are divisible by 8 """
@@ -208,3 +210,61 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+
+def _get_subdataset_and_local_index(dataset, idx):
+	"""Return (subdataset, local_idx) for ConcatDataset or (dataset, idx) otherwise."""
+	if isinstance(dataset, torch.utils.data.ConcatDataset):
+		cum = dataset.cumulative_sizes
+		ds_idx = bisect.bisect_right(cum, idx)
+		local_idx = idx if ds_idx == 0 else idx - cum[ds_idx - 1]
+		sub = dataset.datasets[ds_idx]
+		return sub, local_idx
+	return dataset, idx
+
+def dataset_sequence_length(dataset, idx):
+	"""Return sequence_length for the given global index (handles ConcatDataset)."""
+	sub, local_idx = _get_subdataset_and_local_index(dataset, idx)
+	return getattr(sub, "sequence_length", 1)
+
+class GroupedBatchSampler:
+	"""
+	Batch sampler that groups indices by a key function and yields batches where
+	all indices in a batch share the same key.
+
+	Args:
+		base_sampler: sampler or iterable of indices (e.g., DistributedSampler or RandomSampler)
+		key_fn: callable(index) -> key (e.g., sequence_length)
+		batch_size: desired batch size
+		drop_last: whether to drop last small batches
+	"""
+	def __init__(self, base_sampler, key_fn, batch_size, drop_last=False):
+		self.base_sampler = base_sampler
+		self.key_fn = key_fn
+		self.batch_size = batch_size
+		self.drop_last = drop_last
+
+	def __iter__(self):
+		buckets = defaultdict(list)
+		# base_sampler may be a Sampler object or any iterable
+		for idx in iter(self.base_sampler):
+			key = self.key_fn(idx)
+			buckets[key].append(idx)
+			if len(buckets[key]) >= self.batch_size:
+				batch = buckets[key][:self.batch_size]
+				# remove yielded indices
+				buckets[key] = buckets[key][self.batch_size:]
+				yield batch
+		# yield remaining partial batches
+		if not self.drop_last:
+			for key, bucket in buckets.items():
+				if len(bucket) > 0:
+					yield bucket
+
+	def __len__(self):
+		# Best-effort length; not exact for non-deterministic samplers.
+		# Return number of indices divided by batch size if base_sampler has __len__
+		try:
+			n = len(self.base_sampler)
+			return (n + self.batch_size - 1) // self.batch_size
+		except Exception:
+			raise TypeError("Length not available for base_sampler")

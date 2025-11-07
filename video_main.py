@@ -7,7 +7,8 @@ import os
 from dataloader.video_datasets import build_dataset
 from NeuStereo_video.neustereo_video import NeuStereo
 from video_trainer import Trainer
-from utils.utils import prepare_logger, load_config
+from utils.utils import prepare_logger, load_config, GroupedBatchSampler, dataset_sequence_length
+from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.tensorboard import SummaryWriter
 
 def get_args_parser():
@@ -60,6 +61,7 @@ def setup_dataloaders(cfg, args, logger):
         else:
             logger.info(f"Total training samples: {len(train_dataset)}")
 
+    # Determine distributed info (if any)
     if args.distributed:
         if torch.distributed.is_available():
             initialized = torch.distributed.is_initialized()
@@ -77,19 +79,31 @@ def setup_dataloaders(cfg, args, logger):
             train_dataset,
             num_replicas=world_size,
             rank=args.local_rank)
-
+        base_sampler = train_sampler
+        per_device_batch_size = int(cfg.batch_size)  # cfg.batch_size is interpreted as per-GPU batch size
     else:
         train_sampler = None
+        base_sampler = RandomSampler(train_dataset)
+        per_device_batch_size = int(cfg.batch_size)  # single-process batch size
 
-    shuffle = False #if args.distributed else True
+
+    # Create GroupedBatchSampler so that all samples in a batch share the same sequence_length
+    key_fn = lambda idx: dataset_sequence_length(train_dataset, idx)
+    grouped_batch_sampler = GroupedBatchSampler(
+        base_sampler,
+        key_fn,
+        batch_size=per_device_batch_size,
+        drop_last=True
+    )
+
+    ## DEBUG ##
+    shuffle = False
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle,
+        batch_sampler=grouped_batch_sampler,
         num_workers=cfg.num_workers,
         pin_memory=True,
-        drop_last=True,
-        sampler=train_sampler
+        shuffle=shuffle
     )
 
     return train_loader, train_sampler

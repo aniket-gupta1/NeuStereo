@@ -264,6 +264,18 @@ class Trainer():
         
         # Step 2: Run the training loop
         for epoch_num in range(1, self.cfg.num_epochs+1):
+            # If using a DistributedSampler (passed as train_sampler), tell it the
+            # current epoch so it can change its random seed and produce a new
+            # shuffle order each epoch. Without this call DistributedSampler will
+            # produce the same shuffled ordering every epoch which reduces
+            # randomness across epochs.
+            if self.args.distributed and train_sampler is not None:
+                try:
+                    train_sampler.set_epoch(epoch_num)
+                except Exception:
+                    # If train_sampler doesn't implement set_epoch, ignore.
+                    pass
+
             self.train(model, train_loader, optimizer, scaler, epoch_num)
 
             # Save the checkpoint before validation
