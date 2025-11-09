@@ -15,7 +15,7 @@ general:
   resume: null
   distributed: false
   save_output: false
-  stage: 'infinigen'
+  stage: 'all_video'
   num_epochs: 100
   max_disp: 400
   val_stage: ['eth3d', 'middlebury', 'kitti']
