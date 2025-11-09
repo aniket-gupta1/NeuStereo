@@ -126,7 +126,7 @@ class Trainer():
                             # Convert from blender coordinate frame to opencv coord frame
                             # relative_pose = self.M_blender_to_cv @ relative_pose @ self.M_cv_to_blender
 
-                            warped_contexts = self.warper(
+                            warped_contexts, warped_disp = self.warper(
                                 prev_disp_pred,   # Detached from t-1
                                 prev_contexts['s8'],  # Detached from t-1
                                 prev_contexts['s16'], # Detached from t-1
