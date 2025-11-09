@@ -96,14 +96,11 @@ def setup_dataloaders(cfg, args, logger):
         drop_last=True
     )
 
-    ## DEBUG ##
-    shuffle = False
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_sampler=grouped_batch_sampler,
         num_workers=cfg.num_workers,
-        pin_memory=True,
-        shuffle=shuffle
+        pin_memory=True
     )
 
     return train_loader, train_sampler
