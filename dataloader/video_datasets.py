@@ -4,7 +4,7 @@ import os
 import os.path as osp
 from collections import defaultdict
 import numpy as np
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 from glob import glob
 import cv2
 import hashlib
@@ -364,7 +364,7 @@ class Monkaa(VideoStereoDataset):
         super(Monkaa, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # For Monkaa, the intrinsics are same for the entire dataset
-        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics = [-1050.0, -1050.0, 479.5, 269.5]
 
         # --- 1. Find and Group all files by sequence ---
         sequences = defaultdict(list)
@@ -490,7 +490,7 @@ class FlyingThings3D(VideoStereoDataset):
         super(FlyingThings3D, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
         # For FlyingThings3D, the intrinsics are same for the entire dataset
-        intrinsics = [1050.0, 1050.0, 479.5, 269.5]
+        intrinsics = [-1050.0, -1050.0, 479.5, 269.5]
 
         # --- 1. Find and Group all files by sequence ---
         subsets = ['A', 'B', 'C']
@@ -768,7 +768,7 @@ def build_dataset(args):
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
@@ -799,7 +799,7 @@ def build_dataset(args):
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
@@ -814,18 +814,18 @@ def build_dataset(args):
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
             
         train_transform = video_transforms.Compose(train_transform_list)
         
-        things = FlyingThings3D(transform=train_transform, sequence_length=2)
-        monkaa = Monkaa(transform=train_transform, sequence_length=2)
-        driving = Driving(transform=train_transform, sequence_length=2)
+        things = FlyingThings3D(transform=train_transform, sequence_length=1)
+        monkaa = Monkaa(transform=train_transform, sequence_length=1)
+        driving = Driving(transform=train_transform, sequence_length=1)
         
-        train_dataset = things + monkaa + driving
+        train_dataset = ConcatDataset([things, monkaa, driving])
 
         return train_dataset
 
@@ -833,7 +833,7 @@ def build_dataset(args):
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
@@ -859,24 +859,44 @@ def build_dataset(args):
     
         return train_dataset
 
-    elif args.stage == "all_video":
+    elif args.stage == "all_static":
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
             
         train_transform = video_transforms.Compose(train_transform_list)
         
-        spring = SpringDataset(transform=train_transform, sequence_length=2)
-        infinigen = InfinigenSV(transform=train_transform, sequence_length=2)
-        things = FlyingThings3D(transform=train_transform, sequence_length=2)
-        monkaa = Monkaa(transform=train_transform, sequence_length=2)
-        driving = Driving(transform=train_transform, sequence_length=2)
+        spring = SpringDataset(transform=train_transform, sequence_length=1)
+        infinigen = InfinigenSV(transform=train_transform, sequence_length=1)
+        things = FlyingThings3D(transform=train_transform, sequence_length=1)
+        monkaa = Monkaa(transform=train_transform, sequence_length=1)
+        driving = Driving(transform=train_transform, sequence_length=1) 
+        FSD = FoundationStereo(transform=train_transform, sequence_length=1)
         
-        train_dataset = spring + infinigen + things + monkaa + driving
+        train_dataset = ConcatDataset([spring, infinigen, things, monkaa, driving, FSD])
+
+        return train_dataset
+
+    elif args.stage == "all_video":
+        train_transform_list = [video_transforms.RandomScale(crop_width=768),
+                                video_transforms.RandomCrop(384, 768),
+                                video_transforms.RandomColor(),
+                                # video_transforms.RandomVerticalFlip(),
+                                video_transforms.ToTensor(),
+                                video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+                                ]
+            
+        train_transform = video_transforms.Compose(train_transform_list)
+        
+        spring = SpringDataset(transform=train_transform, sequence_length=2, skip_values=[5, 10, 20]) # 5, 10, 20
+        infinigen = InfinigenSV(transform=train_transform, sequence_length=2, skip_values=[5, 10, 20]) # 5, 10, 20
+        driving = Driving(transform=train_transform, sequence_length=2, skip_values=[0, 2]) # 0, 2
+        
+        train_dataset = ConcatDataset([spring, infinigen, driving])
 
         return train_dataset
 
@@ -884,21 +904,21 @@ def build_dataset(args):
         train_transform_list = [video_transforms.RandomScale(crop_width=768),
                                 video_transforms.RandomCrop(384, 768),
                                 video_transforms.RandomColor(),
-                                video_transforms.RandomVerticalFlip(),
+                                # video_transforms.RandomVerticalFlip(),
                                 video_transforms.ToTensor(),
                                 video_transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
                                 ]
             
         train_transform = video_transforms.Compose(train_transform_list)
         
-        spring = SpringDataset(transform=train_transform, sequence_length=2)
-        infinigen = InfinigenSV(transform=train_transform, sequence_length=2)
-        things = FlyingThings3D(transform=train_transform, sequence_length=2)
-        monkaa = Monkaa(transform=train_transform, sequence_length=2)
-        driving = Driving(transform=train_transform, sequence_length=2)
+        spring = SpringDataset(transform=train_transform, sequence_length=2, skip_values=[5, 10, 20]) # 5, 10, 20
+        infinigen = InfinigenSV(transform=train_transform, sequence_length=2, skip_values=[5, 10, 20]) # 5, 10, 20
+        things = FlyingThings3D(transform=train_transform, sequence_length=1)
+        monkaa = Monkaa(transform=train_transform, sequence_length=1)
+        driving = Driving(transform=train_transform, sequence_length=2, skip_values=[0, 2]) # 0, 2
         FSD = FoundationStereo(transform=train_transform, sequence_length=1)
         
-        train_dataset = spring + infinigen + things + monkaa + driving + FSD
+        train_dataset = ConcatDataset([spring, infinigen, things, monkaa, driving, FSD])
 
         return train_dataset
     
