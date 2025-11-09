@@ -73,7 +73,7 @@ def _calculate_flow_jit_dynamic(
     P_norm = torch.cat([u_norm, v_norm, ones_buffer], dim=1) # (B, 3, H, W)
 
     # --- 2. Unproject (Optimized) ---
-    Z_t_minus_1 = (fx * baseline) / disparity_scaled.clamp(min=1e-6)
+    Z_t_minus_1 = (fx * baseline) / disparity_scaled # .clamp(min=1e-6)
     P_t_minus_1 = Z_t_minus_1.expand(-1, 3, -1, -1) * P_norm
 
     # --- 3. To Homogeneous & Transform ---
@@ -89,7 +89,7 @@ def _calculate_flow_jit_dynamic(
     # --- 4. Re-project (Optimized) ---
     X_t = P_t_hom[:, 0:1] # (B, 1, N)
     Y_t = P_t_hom[:, 1:2] # (B, 1, N)
-    Z_t = P_t_hom[:, 2:3].clamp(min=1e-6) # (B, 1, N)
+    Z_t = P_t_hom[:, 2:3] #.clamp(min=1e-6) # (B, 1, N)
 
     u_prime = (fx.view(B,1,1) * X_t / Z_t + cx.view(B,1,1))
     v_prime = (fy.view(B,1,1) * Y_t / Z_t + cy.view(B,1,1))
@@ -154,18 +154,18 @@ class SoftmaxWarper(nn.Module):
         cy = intrinsics[:, 3].view(B, 1, 1, 1)
         baseline_b = baseline.view(B, 1, 1, 1)
 
-        C_conv = torch.tensor([[1,  0,  0, 0],
-                               [0, -1,  0, 0],
-                               [0,  0, -1, 0],
-                               [0,  0,  0, 1]], device=disparity_prev.device, dtype=torch.float16)
+        # C_conv = torch.tensor([[1,  0,  0, 0],
+        #                        [0, -1,  0, 0],
+        #                        [0,  0, -1, 0],
+        #                        [0,  0,  0, 1]], device=disparity_prev.device, dtype=torch.float16)
         
-        # Expand for batch operation (B, 4, 4)
-        C_conv_batch = C_conv.unsqueeze(0).expand(B, -1, -1)
+        # # Expand for batch operation (B, 4, 4)
+        # C_conv_batch = C_conv.unsqueeze(0).expand(B, -1, -1)
 
         # Convert the pose: T_cv = C_conv @ T_blender @ C_conv
         # We use batch matrix multiplication (bmm)
-        relative_pose = torch.bmm(C_conv_batch, 
-                                     torch.bmm(relative_pose, C_conv_batch))
+        # relative_pose = torch.bmm(C_conv_batch, 
+        #                              torch.bmm(relative_pose, C_conv_batch))
 
         # --- 1. Warp Full-Resolution (Scale 1.0) ---
         # --- THIS IS NOW CALLED ONLY ONCE ---
