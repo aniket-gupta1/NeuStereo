@@ -4,10 +4,12 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from typing import Dict, Any, Optional, List
+import time
 # from datasets import build_dataset
 from dataloader.datasets import (FlyingThings3D, KITTI15, ETH3DStereo, MiddleburyEval3, InferenceDataset)
 from dataloader import transforms
 from utils.utils import InputPadder
+from utils.file_io import write_pfm
 from utils.stereo_metric import epe_metric, d1_metric, thres_metric
 import pdb
 import matplotlib.pyplot as plt
@@ -64,26 +66,45 @@ def unnormalize_image(image):
 
 def save_outputs_func(
     image1: torch.Tensor, image2: torch.Tensor, disp_gt: torch.Tensor, 
-    disp_pred: torch.Tensor, val_id: int, folder_name: str
-):
-    """Saves visual comparison of ground truth and predicted disparity."""
+    disp_pred: torch.Tensor, val_id: int, folder_name: str, left_path: str, save_leaderboard: bool = False,
+    runtime_seconds: Optional[float] = None
+    ):
+    """Saves visual comparison and (optionally) leaderboard PFM for predicted disparity.
 
-    # Make the output folder
-    os.makedirs(f"outputs/{folder_name}", exist_ok=True)
+    Comparison images are saved to outputs/{folder_name}/comparisons/{name}.png
+    Leaderboard PFM files are saved to outputs/{folder_name}/leaderboard/{name}.pfm
+    Optionally, when `runtime_seconds` is provided and `save_leaderboard` is True,
+    a text file `{name}.txt` will be written next to the PFM containing the runtime
+    in seconds in the format: `runtime <runtime_in_seconds>`.
+    """
+
+    # Heuristic to derive a stable base name from left_path
+    if left_path:
+        base = os.path.splitext(os.path.basename(left_path))[0]
+        # If the filename is generic like 'im0' or 'im1', use parent directory name instead
+        if base.lower().startswith('im') or base.lower() in ['left', 'right'] or base.startswith('000'):
+            base_name = os.path.basename(os.path.dirname(left_path))
+        else:
+            base_name = base
+    else:
+        base_name = f"sample_{val_id}"
+
+    comparisons_dir = f"outputs/{folder_name}/comparisons"
+    os.makedirs(comparisons_dir, exist_ok=True)
 
     # Convert tensors to NumPy and normalize if needed
-    image1 = unnormalize_image(image1)
-    image2 = unnormalize_image(image2)
+    image1 = unnormalize_image(image1.clone())
+    image2 = unnormalize_image(image2.clone())
     img1_np = image1.permute(1, 2, 0).numpy()
     img2_np = image2.permute(1, 2, 0).numpy()
     disp_gt_np = disp_gt.cpu().numpy()
     pred_disp_np = disp_pred.cpu().numpy()
-    
+
     # Make the valid mask
     valid_gt_mask = disp_gt_np > 0
 
-    fig, axes = plt.subplots(3, 2, figsize=(12, 15))  # Create a 2x2 grid
-   
+    fig, axes = plt.subplots(3, 2, figsize=(12, 15))
+
     # Display images
     axes[0, 0].imshow(img1_np)
     axes[0, 0].set_title("Left Image")
@@ -92,23 +113,26 @@ def save_outputs_func(
 
     # GT Disparity with colorbar
     im3 = axes[1, 0].imshow(disp_gt_np, cmap="viridis")
-    axes[1, 0].set_title(f"Ground Truth Disp. (min: {disp_gt_np.min():.2f}, max: {disp_gt_np.max():.2f})")
+    # If there is no valid GT (leaderboard/test), avoid empty-array reductions
+    if valid_gt_mask.any():
+        axes[1, 0].set_title(f"Ground Truth Disp. (min: {np.nanmin(disp_gt_np):.2f}, max: {np.nanmax(disp_gt_np):.2f})")
+    else:
+        axes[1, 0].set_title("Ground Truth Disp. (no GT available)")
     cbar3 = plt.colorbar(im3, ax=axes[1, 0], fraction=0.046, pad=0.04)
     cbar3.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
     # Predicted Disparity with colorbar
     im4 = axes[1, 1].imshow(pred_disp_np, cmap="viridis")
-    axes[1, 1].set_title(f"Predicted Disp. (min: {pred_disp_np.min():.2f}, max: {pred_disp_np.max():.2f})")
+    axes[1, 1].set_title(f"Predicted Disp. (min: {np.nanmin(pred_disp_np):.2f}, max: {np.nanmax(pred_disp_np):.2f})")
     cbar4 = plt.colorbar(im4, ax=axes[1, 1], fraction=0.046, pad=0.04)
     cbar4.set_label('Disparity (pixels)', rotation=270, labelpad=15)
 
     # Error map with colorbar
-    # Calculate error
     error_map = np.abs(pred_disp_np - disp_gt_np)
     error_map = np.where(valid_gt_mask, error_map, np.nan)
     valid_errors = error_map[valid_gt_mask]
-    mean_error = valid_errors.mean() if valid_errors.size > 0 else 0
-    max_error = valid_errors.max() if valid_errors.size > 0 else 0
+    mean_error = valid_errors.mean() if valid_errors.size > 0 else float('nan')
+    max_error = valid_errors.max() if valid_errors.size > 0 else float('nan')
 
     im5 = axes[2, 0].imshow(error_map, cmap="hot")
     axes[2, 0].set_title(f"Absolute Error (mean: {mean_error:.2f}, max: {max_error:.2f})")
@@ -116,10 +140,14 @@ def save_outputs_func(
     cbar5.set_label('Error (pixels)', rotation=270, labelpad=15)
 
     # Error histogram
-    axes[2, 1].hist(valid_errors.flatten(), bins=50, edgecolor='black')
+    if valid_errors.size > 0:
+        axes[2, 1].hist(valid_errors.flatten(), bins=50, edgecolor='black')
     axes[2, 1].set_xlabel('Absolute Error (pixels)')
     axes[2, 1].set_ylabel('Pixel Count')
-    axes[2, 1].set_title(f'Error Distribution (EPE: {error_map.mean():.3f})')
+    if valid_errors.size > 0:
+        axes[2, 1].set_title(f'Error Distribution (EPE: {mean_error:.3f})')
+    else:
+        axes[2, 1].set_title('Error Distribution (no GT available)')
     axes[2, 1].grid(True, alpha=0.3)
 
     # Add percentage of pixels below certain thresholds
@@ -131,12 +159,40 @@ def save_outputs_func(
     axes[2, 1].legend()
 
     for i, ax in enumerate(axes.flat):
-        if i != 5:  # Keep axis on for histogram
+        if i != 5:
             ax.axis("off")
 
     plt.tight_layout()
-    plt.savefig(f"outputs/{folder_name}/comparison_{val_id}.png")
+    comp_path = os.path.join(comparisons_dir, f"{base_name}.png")
+    plt.savefig(comp_path)
     plt.close()
+
+    # Optionally write leaderboard pfm
+    if save_leaderboard:
+        leaderboard_dir = f"outputs/{folder_name}/leaderboard"
+        os.makedirs(leaderboard_dir, exist_ok=True)
+
+        # Prepare pfm: set invalid pixels per-dataset policy
+        pfm_array = pred_disp_np.astype(np.float32)
+        # Mark invalid where non-finite or <= 0
+        invalid_mask = ~np.isfinite(pfm_array) | (pfm_array <= 0)
+        # For ETH3D use positive infinity for invalid pixels, otherwise use NaN
+        if folder_name.lower() == 'eth3d':
+            pfm_array[invalid_mask] = np.inf
+        else:
+            pfm_array[invalid_mask] = np.nan
+
+        pfm_path = os.path.join(leaderboard_dir, f"{base_name}.pfm")
+        write_pfm(pfm_path, pfm_array)
+
+        # Optionally write runtime file alongside PFM
+        if runtime_seconds is not None:
+            runtime_txt_path = os.path.join(leaderboard_dir, f"{base_name}.txt")
+            try:
+                with open(runtime_txt_path, 'w') as f:
+                    f.write(f"runtime {runtime_seconds:.6f}\n")
+            except Exception as e:
+                logging.warning(f"Failed to write runtime file {runtime_txt_path}: {e}")
 
 
 
@@ -183,9 +239,11 @@ DATASET_CONFIGS = {
 def validate_dataset(
     model: torch.nn.Module,
     dataset_name: str,
-    device: str, 
-    mixed_prec: bool = True, 
+    device: str,
+    mixed_prec: bool = True,
     save_outputs: bool = False,
+    save_leaderboard: bool = False,
+    run_id: Optional[str] = None,
     **model_kwargs: Any,
     ):
     """
@@ -197,6 +255,7 @@ def validate_dataset(
         device: The device to run evaluation on ('cuda' or 'cpu').
         mixed_prec: Whether to use automatic mixed precision.
         save_outputs: Whether to save visualization images.
+        save_leaderboard: Whether to save outputs in leaderboard format.
         **model_kwargs: Additional keyword arguments for the model's forward pass (e.g., iters_s8).
 
     Returns:
@@ -221,12 +280,16 @@ def validate_dataset(
 
     for val_id in tqdm(range(len(val_dataset)), desc=f"Validating on {dataset_name.upper()}"):
         data = val_dataset[val_id]
-        image1_inp, image2_inp, disp_gt = data['left'], data['right'], data['disp']
-        
-        # Make the valid mask
-        valid_gt = disp_gt > 0
-        if not valid_gt.any():
-            continue
+        image1_inp, image2_inp = data['left'], data['right']
+
+        # Ground truth may be missing for leaderboard/test splits
+        disp_gt = data.get('disp', None)
+        has_gt = disp_gt is not None
+        if has_gt:
+            # If disp is present, create valid mask and skip samples with no valid GT
+            valid_gt = disp_gt > 0
+            if not valid_gt.any():
+                continue
 
         # Convert inputs to half precision and pad the images. 
         image1 = image1_inp.half()
@@ -239,31 +302,73 @@ def validate_dataset(
         # Intialize model parameters
         model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
-        # Inference
+        # Inference (GPU-precise timing using CUDA events)
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=mixed_prec):
+            # Use CUDA events for accurate GPU timing
+            start_evt = torch.cuda.Event(enable_timing=True)
+            end_evt = torch.cuda.Event(enable_timing=True)
+            # Ensure previous CUDA work is finished before starting timing
+            torch.cuda.synchronize()
+            start_evt.record()
             results = model(image1, image2, **model_kwargs)
+            end_evt.record()
+            # Wait for the events to be recorded
+            torch.cuda.synchronize()
+            # elapsed_time returns milliseconds
+            runtime_ms = start_evt.elapsed_time(end_evt)
+            runtime_seconds = float(runtime_ms) / 1000.0
        
         disp_pred = results[-1] # Shape [1, H, W]
         disp_pred = padder.unpad(disp_pred)[0].squeeze(0).cpu() # Shape [H, W]
-        assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
+
+        # If no GT was provided, create a zero tensor matching prediction shape so
+        # downstream code (saving/visualization) can operate. Metric computation
+        # below is still skipped when `has_gt` is False.
+        if disp_gt is None:
+            disp_gt = torch.zeros_like(disp_pred)
+        else:
+            assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
 
         # Save the outputs
         if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, disp_gt, disp_pred, val_id, dataset_name)
+            # Pass the left image path to save_outputs_func (robust access)
+            left_path = ''
+            if isinstance(data.get('left_name', ''), str) and data.get('left_name'):
+                left_path = data.get('left_name')
+            elif isinstance(data.get('left', ''), str) and data.get('left'):
+                left_path = data.get('left')
+            logging.info(f"Left image path: {left_path}")
+            # If no GT was provided, pass a zero-tensor shaped like prediction so visualization code can run
+            if not has_gt:
+                disp_to_save = torch.zeros_like(disp_pred)
+            else:
+                disp_to_save = disp_gt
 
-        # Compute Metrics
-        epe = F.l1_loss(disp_gt[valid_gt], disp_pred[valid_gt], reduction='mean')
-        d1 = d1_metric(disp_pred, disp_gt, valid_gt)
-        thres = thres_metric(disp_pred, disp_gt, valid_gt, config['epe_threshold'])
-        
-        valid_samples += 1
-        val_epe += epe.item()
-        val_d1 += d1.item()
-        val_thres += thres.item()
+            # Compute folder name with optional run id (creates outputs/{dataset}/{run_id}/...)
+            folder_name = dataset_name if run_id is None else f"{dataset_name}/{run_id}"
+            # pass runtime_seconds to save_outputs_func so it can write a .txt file next to the .pfm
+            save_outputs_func(image1_inp, image2_inp, disp_to_save, disp_pred, val_id, folder_name, left_path, save_leaderboard=save_leaderboard, runtime_seconds=runtime_seconds)
 
-    mean_epe = val_epe / valid_samples
-    mean_d1 = val_d1 / valid_samples
-    mean_thres = val_thres / valid_samples
+        # Compute Metrics only when GT is available
+        if has_gt:
+            epe = F.l1_loss(disp_gt[valid_gt], disp_pred[valid_gt], reduction='mean')
+            d1 = d1_metric(disp_pred, disp_gt, valid_gt)
+            thres = thres_metric(disp_pred, disp_gt, valid_gt, config['epe_threshold'])
+
+            valid_samples += 1
+            val_epe += epe.item()
+            val_d1 += d1.item()
+            val_thres += thres.item()
+
+    if valid_samples > 0:
+        mean_epe = val_epe / valid_samples
+        mean_d1 = val_d1 / valid_samples
+        mean_thres = val_thres / valid_samples
+    else:
+        logging.info(f"No ground-truth samples found for {dataset_name.upper()}; metrics will be NaN.")
+        mean_epe = float('nan')
+        mean_d1 = float('nan')
+        mean_thres = float('nan')
 
     # logging.info(f"Validation ETH3D: EPE: {mean_epe} || D1: {mean_d1} || {config['epe_threshold']}px Error: {mean_thres}")
     return {'epe': mean_epe, 'd1': mean_d1*100, 'thresh': mean_thres*100}
@@ -321,9 +426,17 @@ def inference_realworld(
         # Intialize model parameters
         model.init_bhwd(image1.shape[0], image1.shape[-2], image1.shape[-1], device)
 
-        # Inference
+        # Inference (GPU-precise timing using CUDA events)
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=mixed_prec):
+            start_evt = torch.cuda.Event(enable_timing=True)
+            end_evt = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            start_evt.record()
             results = model(image1, image2, **model_kwargs)
+            end_evt.record()
+            torch.cuda.synchronize()
+            runtime_ms = start_evt.elapsed_time(end_evt)
+            runtime_seconds = float(runtime_ms) / 1000.0
        
         disp_pred = results[-1] # Shape [1, H, W]
         disp_pred = padder.unpad(disp_pred)[0].squeeze(0).cpu() # Shape [H, W]
@@ -331,7 +444,7 @@ def inference_realworld(
 
         # Save the outputs
         if save_outputs:
-            save_outputs_func(image1_inp, image2_inp, disp_gt, disp_pred, val_id, "Inference")
+            save_outputs_func(image1_inp, image2_inp, disp_gt, disp_pred, val_id, "Inference", left_path='', save_leaderboard=False)
 
     return 
 

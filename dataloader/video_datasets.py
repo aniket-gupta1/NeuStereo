@@ -594,7 +594,8 @@ class KITTI15(VideoStereoDataset):
                  mode='training',
                  transform=None,
                  sequence_length=1,
-                 skip_values=None
+                 skip_values=None,
+                 leaderboard=False
                  ):
         super(KITTI15, self).__init__(transform=transform, sequence_length=sequence_length, skip_values=skip_values)
 
@@ -616,7 +617,10 @@ class KITTI15(VideoStereoDataset):
 
                 sample['left'] = left_path
                 sample['right'] = left_path.replace("image_2", "image_3")
-                sample['disp'] = left_path.replace("image_2", "disp_occ_0")
+                if leaderboard:
+                    sample['disp'] = None
+                else:
+                    sample['disp'] = left_path.replace("image_2", "disp_occ_0")
                 sample['intrinsics'] = np.array(intrinsics)
                 sample['pose'] = pose
                 sample['baseline'] = baseline
@@ -640,7 +644,8 @@ class ETH3DStereo(VideoStereoDataset):
                  mode='two_view_training',
                  transform=None,
                  sequence_length=1,
-                 skip_values=None
+                 skip_values=None,
+                 leaderboard=False
                  ):
         super(ETH3DStereo, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True, skip_values=skip_values)
 
@@ -670,7 +675,10 @@ class ETH3DStereo(VideoStereoDataset):
 
                 sample['left'] = left_path
                 sample['right'] = left_path.replace("im0", "im1")
-                sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm").replace("two_view_training", "two_view_training_gt")
+                if leaderboard:
+                    sample['disp'] = None
+                else:
+                    sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm").replace("two_view_training", "two_view_training_gt")
                 sample['intrinsics'] = np.array(intrinsics)
                 sample['pose'] = pose
                 sample['baseline'] = baseline
@@ -695,7 +703,8 @@ class MiddleburyEval3(VideoStereoDataset):
                  resolution='H',
                  transform=None,
                  sequence_length=1,
-                 skip_values=None
+                 skip_values=None,
+                 leaderboard=False
                  ):
         super(MiddleburyEval3, self).__init__(transform=transform, sequence_length=sequence_length, is_middlebury_eth3d=True, skip_values=skip_values)
 
@@ -725,7 +734,10 @@ class MiddleburyEval3(VideoStereoDataset):
 
                 sample['left'] = left_path
                 sample['right'] = left_path.replace("im0", "im1")
-                sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm")
+                if leaderboard:
+                    sample['disp'] = None
+                else:
+                    sample['disp'] = left_path.replace("im0.png", "disp0GT.pfm")
                 sample['intrinsics'] = np.array(intrinsics)
                 sample['pose'] = pose
                 sample['baseline'] = baseline
